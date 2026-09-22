@@ -1,0 +1,1 @@
+"""Local Leadrat AI assistant."""

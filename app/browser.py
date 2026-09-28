@@ -76,17 +76,22 @@ class BrowserWorker:
         self.page.set_default_timeout(8000)
         self.page.on('dialog',self.dismiss_native)
         self.context.on('page',lambda page: asyncio.create_task(page.close()) if page!=self.page else None)
-        await self.page.goto(config.CRM_URL,wait_until='domcontentloaded',timeout=60000)
+        # With a saved login, open the app itself (it lands on Leads); the CRM sends an invalid login to /login.
+        await self.page.goto(config.CRM_ORIGIN+'/' if self.state_mtime else config.CRM_URL,wait_until='domcontentloaded',timeout=60000)
         await self.settle()
         if await self.signed_in():await self.save_state()
         elif has_login_credentials():await self.login()
         else:self.login_problem='No saved CRM login was found and no test credentials were supplied.'
 
     async def settle(self,timeout=25000):
-        # Angular redirects a saved login away from /login; wait for either the app or the form.
+        # Wait for either the app or the login form. The hosted CRM can render the form for a few
+        # seconds before its guard redirects (or refreshes) a saved login, so keep waiting for the app then.
         either=self.page.locator(NAV).first.or_(self.page.locator(LOGIN_FIELDS).first)
         try:await either.first.wait_for(state='visible',timeout=timeout)
-        except Exception:pass
+        except Exception:return
+        if self.state_mtime and not await self.page.locator(NAV).count():
+            try:await self.page.locator(NAV).first.wait_for(state='visible',timeout=10000)
+            except Exception:pass
 
     async def login(self):
         """One sign-in attempt with the operator's test credentials; returns True when the CRM opens."""
@@ -152,7 +157,7 @@ class BrowserWorker:
             for origin in data.get('origins',[]):
                 if origin.get('origin')==config.CRM_ORIGIN:
                     await self.page.evaluate("items=>{for(const i of items)localStorage.setItem(i.name,i.value)}",origin.get('localStorage',[]))
-            await self.page.goto(config.CRM_URL,wait_until='domcontentloaded',timeout=60000)
+            await self.page.goto(config.CRM_ORIGIN+'/',wait_until='domcontentloaded',timeout=60000)
             await self.settle()
         return await self.signed_in()
 

@@ -4,13 +4,13 @@ Python backend + an embeddable HTML website widget. The backend owns a hidden, i
 
 ## Start on this Windows machine
 
-1. Open PowerShell in `C:\Leadrat AI\Beacon`.
-2. Run `./start.ps1 -OpenAI`. Enter the temporary OpenAI API key and test CRM credentials at the prompts. Password and key input are hidden and held in process memory only; Beacon never writes them to disk. The hidden browser signs in with them and saves the resulting CRM login (not the password) to `.browser/crm-state.json`, so later sessions and restarts start signed in. The credentials stay in memory so the hidden browser can sign in again if the saved login expires.
-3. In another PowerShell window run `./start-test-page.ps1`.
-4. Open **http://localhost:8011**, choose **Start exploring**, then **Start a session**. The live CRM appears on the left of the popup and the chat on the right.
-5. Voice is on by default and reads every reply; the **Voice** button turns it off (remembered per browser). End the session when done; its browser context and conversation are discarded.
+1. **One time:** open `.env` and fill `OPENAI_API_KEY`, `BEACON_LOGIN_USER` and `BEACON_LOGIN_PASSWORD` (test CRM account only). `.env` is git-ignored: never commit or share it. Wrap a value containing `#`, `$` or spaces in single quotes.
+2. Open PowerShell in `C:\Leadrat AI\Beacon` and run **`./start.ps1`**. It installs dependencies, starts the test website (port 8011) in the background and Beacon (port 8010) in this window, then opens **http://localhost:8011** when ready. It asks only for a value that is missing from `.env`.
+3. On the website choose **Start exploring**, then **Start a session**. The hidden demo browser signs in (or reuses the login saved in `.browser/crm-state.json`), and the live CRM appears on the left of the popup with the chat on the right.
+4. Voice is on by default and reads every reply; the **Voice** button turns it off (remembered per browser). End the session when done; its browser context and conversation are discarded.
+5. **Ctrl+C** stops both servers.
 
-`./start.ps1 -Login` runs the Ollama alternative with the same credential prompt. `./start.ps1` starts without prompting and uses the saved login. **Sign in manually** (for example when the account asks for two-factor verification) with `./login.ps1`: it opens a visible Chrome window once, saves the login when the CRM opens, and closes. A session that is already waiting picks the login up automatically. Install Google Chrome first. The server binds to loopback only. Ctrl+C stops each server.
+Options: `./start.ps1 -Ollama` uses the free local planner (same as `PLANNER_PROVIDER=ollama` in `.env`), `-OpenAI` forces OpenAI, `-NoBrowser` does not open the website. `./start-test-page.ps1` still runs the website on its own. **Sign in manually** (for example when the account asks for two-factor verification) with `./login.ps1`: it opens a visible Chrome window once, saves the login when the CRM opens, and closes. A session that is already waiting picks the login up automatically. Credentials stay in process memory so the hidden browser can sign in again if the saved login expires. Install Google Chrome first. The servers bind to loopback only.
 
 `HEADLESS=false` in `.env` additionally shows the demo browser as a separate window, for debugging only. `.browser/crm-state.json` contains CRM auth tokens: keep it on this machine and delete it to force a fresh sign-in.
 

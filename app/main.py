@@ -16,7 +16,6 @@ from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
 from . import docs
-from . import guide
 
 READ_ONLY=("I can't do that here. This demo is read-only: I never delete, edit, save, send, upload, export, assign or call anything. "
     "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
@@ -233,7 +232,6 @@ async def screen(id:str,request:Request):
 
 async def execute(s,message):
     started=time.monotonic();answered=False
-    guide.start_turn(s.say)
     try:
         if declined(message):
             s.opted_out=True

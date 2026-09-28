@@ -1,7 +1,6 @@
 """Reviewed selectors for the hosted CRM. No model-supplied selectors or mutations."""
 import re
 from .browser import DemoError
-from . import guide
 
 async def visible(locator):
     return [locator.nth(i) for i in range(await locator.count()) if await locator.nth(i).is_visible()]
@@ -20,11 +19,12 @@ async def one(locator, description, click=False):
     target=items[0]
     if await target.evaluate("el=>!!el.closest('[aria-disabled=true],.pe-none')"):
         raise DemoError(description+' is disabled for this record.')
+    await target.scroll_into_view_if_needed()
     if click:
-        await guide.click(target,'Click '+description)
+        await target.click()
         try:await handle_popups(locator.page)
         except PopupBlocked as exc:raise DemoError(str(exc))
-    else:await guide.point(target,'Here: '+description)
+    else:await target.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
     return target
 
 async def walkthrough(worker, feature):
@@ -45,7 +45,8 @@ async def walkthrough(worker, feature):
             targets=await visible(page.locator(list_controls[key]))
             if not targets:raise DemoError(feature['title']+' has no visible control in this list. '+feature['facts'][0])
             # Read-only highlight of a representative control; never selects rows or duplicates.
-            await guide.point(targets[0],'Here: '+feature['title'])
+            await targets[0].scroll_into_view_if_needed()
+            await targets[0].evaluate("el => el.style.outline='3px solid #18aa83'")
             return 'The relevant list control is highlighted. No list preference or record was changed.'
         if key=='export':
             await one(page.get_by_text(re.compile(r'^\s*Export\s*$',re.I)), 'Export control')
@@ -61,7 +62,7 @@ async def walkthrough(worker, feature):
             except Exception:raise DemoError('No visible lead is available for a record walkthrough. '+feature['facts'][0])
             choices=await visible(rows)
             if not choices:raise DemoError('No visible lead is available.')
-            await guide.click(choices[0],'Open a lead from the list')
+            await choices[0].click()
         await one(preview,'Lead preview')
         tab={'status':'Status','meeting':'Status','site_visit':'Status','booking':'Status',
              'appointment_done':'Status','notes':'Notes','history':'History','documents':'Document'}.get(key,'Overview')
@@ -106,7 +107,7 @@ async def walkthrough(worker, feature):
                         if not await preview.count():
                             rows=await visible(page.locator('lead-name-section .header-6.text-secondary'))
                             if not rows:raise DemoError('The checked sample leads have no email address. Edit Lead is required before email can be demonstrated.')
-                            await guide.click(rows[0],'Open a lead from the list')
+                            await rows[0].click()
                         await one(preview.locator('leads-actions [title="Edit"]'),'Edit lead to add an email address',True)
                         await one(page.locator('input[formcontrolname="email"]'),'Lead email address field')
                         return 'Email prerequisite: the checked sample leads have no email address, so I opened Edit Lead and highlighted Email. Enter a valid address and save before using Email. I have not entered or saved an address, and the email composer has not been opened.'
@@ -125,7 +126,7 @@ async def walkthrough(worker, feature):
                         candidates=await visible(page.locator('lead-name-section .header-6.text-secondary'))
                         if len(candidates)<=attempt+1:
                             raise DemoError('No other visible test lead is available to demonstrate email. The current lead needs a valid email address through Edit Lead. No customer data was changed.')
-                        await guide.click(candidates[attempt+1],'Open another lead from the list')
+                        await candidates[attempt+1].click()
                     await one(preview.locator('leads-actions #clkMailLead'),'Email action on the next lead',True)
                     try:await possible.first.wait_for(state='visible',timeout=6000)
                     except Exception:pass

@@ -15,6 +15,9 @@ from .planner import FEATURES, plan, declined, small_talk, warm_up, USAGE
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
+from . import docs
+
+QUESTION=re.compile(r"^\s*(how|why|what|where|when|can|could|does|do|is|are|which|who|kya|kaise|kyu|kyun|kaha|kahan)|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
 ABANDONED_AFTER=30
@@ -238,12 +241,15 @@ async def execute(s,message):
             return
         selected,source=await plan(message,s.last_feature)
         if selected.feature=='unknown':
-            s.say('I do not have a verified guide for that request in this build. I can demonstrate Leads, Add Lead, bulk-upload entry, Projects, Properties, Tasks and Dashboard. I will not invent unsupported steps.')
+            # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
+            s.say((await docs.answer(message))['text'])
             return
         f=FEATURES[selected.feature];s.last_feature=f['id']
         s.worker.notify=s.say
+        # Questions get an answer from the handbook when it has one; the reviewed catalogue text is the fallback.
+        grounded=await docs.answer(message) if QUESTION.search(message) or not selected.demo else None
         if not selected.demo:
-            s.say(' '.join(f['facts']));return
+            s.say(grounded['text'] if grounded and grounded['grounded'] else ' '.join(f['facts']));return
         step={'title':f['title'],'status':'running','detail':'Checking the visible CRM navigation.'}
         s.steps.append(step)
         s.say(f['facts'][0])
@@ -258,7 +264,7 @@ async def execute(s,message):
             step['status']='overview_only' if overview_only else 'verified';step['detail']=result
             if not overview_only:s.shown.add(f['id'])
             s.say(result)
-        s.say(f['facts'][1])
+        s.say(grounded['text'] if grounded and grounded['grounded'] else f['facts'][1])
     except asyncio.CancelledError:
         for step in s.steps:
             if step['status']=='running':step['status']='stopped';step['detail']='Stopped by the visitor.'

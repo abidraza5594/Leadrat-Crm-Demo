@@ -5,3 +5,8 @@ __pycache__/
 artifacts/*
 !artifacts/.gitkeep
 .browser/
+
+# Company-internal product docs and the index built from them
+knowledge/docs/
+# Eval outputs quote the internal handbook; commit only once the repository is private
+eval/results/

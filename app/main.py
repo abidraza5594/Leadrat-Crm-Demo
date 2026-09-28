@@ -15,6 +15,9 @@ from .planner import FEATURES, plan, declined, small_talk, warm_up, USAGE
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
+from . import docs
+
+QUESTION=re.compile(r"\b(how|why|what|where|when|which|who|can i|could i|does|do i|is it|are there|kya|kaise|kyu|kyun|kaha|kahan|batao|bataiye|explain)\b|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
 ABANDONED_AFTER=30
@@ -226,7 +229,7 @@ async def screen(id:str,request:Request):
     except Exception:return Response(status_code=204)
 
 async def execute(s,message):
-    started=time.monotonic()
+    started=time.monotonic();answered=False
     try:
         if declined(message):
             s.opted_out=True
@@ -238,15 +241,20 @@ async def execute(s,message):
             return
         selected,source=await plan(message,s.last_feature)
         if selected.feature=='unknown':
-            s.say('I do not have a verified guide for that request in this build. I can demonstrate Leads, Add Lead, bulk-upload entry, Projects, Properties, Tasks and Dashboard. I will not invent unsupported steps.')
+            # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
+            s.say((await docs.answer(message))['text'])
             return
         f=FEATURES[selected.feature];s.last_feature=f['id']
         s.worker.notify=s.say
+        # Questions get an answer from the handbook when it has one; the reviewed catalogue text is the fallback.
+        grounded=await docs.answer(message) if QUESTION.search(message) or not selected.demo else None
+        answered=bool(grounded and grounded['grounded'])
         if not selected.demo:
-            s.say(' '.join(f['facts']));return
+            s.say(grounded['text'] if grounded and grounded['grounded'] else ' '.join(f['facts']));return
         step={'title':f['title'],'status':'running','detail':'Checking the visible CRM navigation.'}
         s.steps.append(step)
-        s.say(f['facts'][0])
+        # Answer the question from the handbook first; the screen then shows where it happens.
+        s.say(grounded['text'] if answered else f['facts'][0])
         result=await s.worker.open_module(f)
         step['status']='verified';step['detail']=result
         s.shown.add(f['module'])
@@ -258,14 +266,15 @@ async def execute(s,message):
             step['status']='overview_only' if overview_only else 'verified';step['detail']=result
             if not overview_only:s.shown.add(f['id'])
             s.say(result)
-        s.say(f['facts'][1])
+        if not answered:s.say(f['facts'][1])
     except asyncio.CancelledError:
         for step in s.steps:
             if step['status']=='running':step['status']='stopped';step['detail']='Stopped by the visitor.'
         raise
     except DemoError as exc:
         s.last_error=str(exc);s.say(str(exc))
-        if s.last_feature in FEATURES:s.say('Here is the procedure: '+FEATURES[s.last_feature]['facts'][1])
+        # A handbook answer already covers the procedure when the screen cannot be shown.
+        if s.last_feature in FEATURES and not answered:s.say('Here is the procedure: '+FEATURES[s.last_feature]['facts'][1])
         for step in s.steps:
             if step['status']=='running':step['status']='failed';step['detail']=str(exc)
     except (httpx.HTTPError,ValueError,KeyError):

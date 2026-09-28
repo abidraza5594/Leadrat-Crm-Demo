@@ -101,3 +101,22 @@ Browser checks with a scripted speech-recognition stand-in driven step by step (
 Backend: 46 pytest tests pass, including an interrupting turn that cancels a running demonstration (409 without `interrupt`, 202 with it).
 
 Not verified: real microphone recognition quality, echo leakage from loud speakers, and the echo-cancelled track path (it needs a newer Chrome with a real microphone).
+
+## Grounded Q&A from the company handbook — 28 September 2026
+
+Source: FLOE Leadrat Pre-Sales Product Knowledge Handbook v0.2 (company-provided, 29 pages, 13 modules), indexed as 139 chunks.
+
+| Mode | Answerable answered, citing the expected module | Unanswerable refused | p50 |
+|---|---|---|---|
+| `llm` (OpenAI, excerpts only, must cite) | 30 / 30 | 20 / 20 (100%) | 2.27 s |
+| `extractive` (no model) | 20 / 30 | 18 / 20 (90%) | < 1 ms |
+
+The unanswerable set covers pricing, trials, integrations (Salesforce, HubSpot/Zapier, portal list), certification, hosting, SLA, payroll/GST, post-sales payments, competitors, discounts, support hours, offline mobile, refunds, API limits and a prompt-injection request.
+
+Limits: I wrote these 50 questions and tuned retrieval while running them, so they are a development set, not a held-out test; a set written by someone else should be the final measurement. "Expected module" is an automatic proxy: answer correctness still needs a person to read `eval/results/groundedness-llm.json`. The two extractive refusal misses (portal list, support hours) show why the model verifier is used when available.
+
+### Handbook coverage audit
+
+All 29 pages produce chunks; each of the 13 modules has its 6 sections (purpose, feature catalogue, operating/setup flow, rules, troubleshooting, response guidance) plus the handbook guidance pages. Of 1,244 distinct words in the PDF, 47 are in no chunk: module numbers and section headings (kept as chunk labels), removed table headers, and words that appear only in the excluded "Questions FLOE should be able to answer" lists. Their answers exist elsewhere in the module; synonyms were added for "outdated", "database", "move" and "deactivate". Eval results were unchanged after the audit (llm 30/30 and 20/20; extractive 20/30 and 18/20).
+
+Chat-path fix found in the audit: a question that also triggers a screen demo lost its handbook answer when the demo could not run, and Hinglish questions with the question word mid-sentence ("… kyun hai") were not recognised. The handbook answer is now given first and kept when the demo fails.

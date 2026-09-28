@@ -86,3 +86,15 @@ The 🎤 button uses the browser's built-in speech recognition (Chrome and Edge;
 - **Beacon's own voice:** where the browser's recognition accepts a microphone track (newer Chrome), Beacon passes an echo-cancelled one. In every browser, a transcript whose word pairs mostly repeat what Beacon said in the last few seconds or its current reply is ignored. Speakers at high volume can still leak through; headphones avoid it.
 - Hindi recognition returns Devanagari. Common CRM words (लीड, स्टेटस, नोट, मीटिंग, व्हाट्सएप, दिखाओ, बदलें …) are romanised for the reviewed shortcuts, keyword fallback and opt-out detection; the planner model receives the original text.
 - Blocked microphone, missing microphone and offline recognition show a message in the voice status line; typing is unaffected.
+
+## Grounded answers from the company handbook
+
+Put the company-provided documentation PDF (FLOE Leadrat Pre-Sales Product Knowledge Handbook) in `knowledge/docs/`. It is internal, so `knowledge/docs/` is git-ignored. At start-up `app/docs.py` extracts the text, splits it into module/section chunks of about 500 characters (question-only lists are excluded) and indexes them with BM25 plus light stemming, a small synonym list and Hinglish romanisation. Nothing is a hand-written answer.
+
+A question that is not a screen Beacon can show, and any question-style turn during a demo, is answered from the handbook:
+
+1. Retrieve the best chunks. Weak evidence (low score or less than 40–60% of the question's words present) returns the fixed "I don't know" reply.
+2. With `PLANNER_PROVIDER=openai`, the model gets up to five excerpts marked as untrusted data, must answer only from them, returns `supported` and the excerpt numbers it used, and the reply cites that excerpt's module and page. Unsupported or uncited answers become the "I don't know" reply.
+3. Without a hosted model (or if it fails), the reply is the best-matching handbook sentences, with the source (`DOCS_ANSWER=extractive`).
+
+Evaluation: `python eval/groundedness.py --mode llm` (or `--mode extractive`) runs 30 answerable and 20 unanswerable questions from `eval/groundedness.jsonl` and saves every answer to `eval/results/` for hand review.

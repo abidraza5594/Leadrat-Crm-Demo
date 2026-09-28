@@ -59,6 +59,8 @@
     for (const m of messages) {
       const existing = rendered.get(m.id);
       if (existing) { previousRole = m.role; continue; }
+      // Acknowledgements ("Let me check that for you.") are voice only.
+      if (m.kind === 'ack') continue;
       if (!rendered.size) box.replaceChildren();
       const article = document.createElement('article'); article.className = 'message ' + (m.role==='user' ? 'user' : 'assistant');
       // Consecutive Beacon replies read as one turn; only the first carries the name.
@@ -94,7 +96,7 @@
     if (voiceHold >= 0 && users > voiceHold) voiceHold = -1;
     if (voiceHold < 0) {
       const lastUser = messages.map(m=>m.role).lastIndexOf('user');
-      messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else { voiceQueue.offer(m); mark('shown'); } } });
+      messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else { voiceQueue.offer(m); if (m.kind !== 'ack') mark('shown'); } } });
     }
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
     if (next.status === 'login_required' && hasFrame) clearScreen();
@@ -187,9 +189,10 @@
       spoken.add(message.id);
       if (!enabled || !session) return;
       const parts = Array.isArray(message.parts) && message.parts.length ? message.parts : [message.text || ''];
-      parts.forEach((text,part)=>queue.push({id:message.id,part,text,target:session}));
+      parts.forEach((text,part)=>queue.push({id:message.id,part,text,target:session,kind:message.kind}));
       lookahead(); pump();
     }
+    let currentKind = null;
     function playBlob(blob) {
       return new Promise(resolve => {
         const url = URL.createObjectURL(blob); let settled = false, watchdog = null;
@@ -198,7 +201,7 @@
         player.onended = () => done('ok'); player.onerror = () => done('failed');
         player.src = url;
         player.play().then(()=>{
-          mark('audio');
+          mark('audio'); if (currentKind !== 'ack') mark('answer_audio');
           status('Speaking…');
           const seconds = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 40;
           watchdog = setTimeout(()=>done('ok'), (seconds + 4) * 1000);
@@ -234,7 +237,7 @@
           status('Preparing voice…');
           const blob = await fetchClip(item);
           if (gen !== generation) return;
-          currentText = item.text;
+          currentText = item.text; currentKind = item.kind || null;
           let result = blob ? await playBlob(blob) : 'failed';
           if (gen !== generation || result === 'stopped') return;
           if (result === 'failed') result = await speakText(item.text);

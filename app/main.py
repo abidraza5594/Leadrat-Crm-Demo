@@ -15,10 +15,16 @@ from .planner import FEATURES, plan, declined, small_talk, warm_up, write_reques
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
+from .qualify import qualify_session, rules_extract, transcript_of
+from . import handoff as handoffs
+from fastapi.responses import JSONResponse
 from . import docs
 
 READ_ONLY=("I can't do that here. This demo is read-only: I never delete, edit, save, send, upload, export, assign or call anything. "
     "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
+# Spoken the moment a turn starts so the visitor hears Beacon within a second while the answer is prepared.
+# Voice only (no chat bubble); synthesised once per session in advance. Reported separately in eval/latency.py.
+ACKS={'question':'Let me check that for you.','action':'Sure, one moment.'}
 QUESTION=re.compile(r"\b(how|why|what|where|when|which|who|can i|could i|does|do i|is it|are there|kya|kaise|kyu|kyun|kaha|kahan|batao|bataiye|explain)\b|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
@@ -67,20 +73,30 @@ class Session:
     auth_lost:float|None=None
     voice_enabled:bool=False
     voice_cache:VoiceCache=field(default_factory=VoiceCache)
-    def say(self,text):
+    qual:dict|None=None
+    qual_task:asyncio.Task|None=None
+    handoff_status:str='not_requested'
+    discovery_asked:list=field(default_factory=list)
+    closed_politely:bool=False
+    def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
         message_id=secrets.token_urlsafe(12)
-        self.messages.append({'id':message_id,'role':'assistant','text':text,'parts':parts})
+        self.messages.append({'id':message_id,'role':'assistant','text':text,'parts':parts,**({'kind':kind} if kind else {})})
+        if self.timings and kind is None and 'answer_reply_ms' not in self.timings[-1]:
+            self.timings[-1]['answer_reply_ms']=round((time.monotonic()-self.turn_started)*1000)
         if self.timings and 'first_reply_ms' not in self.timings[-1]:
             self.timings[-1].update(first_reply_ms=round((time.monotonic()-self.turn_started)*1000),first_message_id=message_id,first_part_hash=__import__('hashlib').sha256(parts[0][:3000].encode()).hexdigest())
         if self.voice_enabled:
             for part in parts:self.voice_cache.prepare(part)
         self.messages=self.messages[-80:]
+    def qual_view(self):
+        if self.qual:return {**self.qual['qualification'],'scorer':self.qual['source'],'fallback_attempts':self.qual['attempts']}
+        return qualify(Facts(),declined=self.opted_out)
     def snapshot(self):
         problem=getattr(self.worker,'login_problem',None)
         return {'id':self.id,'status':self.status,'busy':bool(self.task and not self.task.done()),'messages':self.messages,
-          'steps':self.steps,'qualification':qualify(Facts(),declined=self.opted_out),'last_error':self.last_error,'product_areas_shown':sorted(self.shown),
+          'steps':self.steps,'qualification':self.qual_view(),'handoff_status':self.handoff_status,'last_error':self.last_error,'product_areas_shown':sorted(self.shown),
           'login_help':(LOGIN_HELP+(' Last attempt: '+problem if problem else '')) if self.status=='login_required' else None}
 
 sessions:dict[str,Session]={}
@@ -92,7 +108,7 @@ def spawn(coroutine):
     task=asyncio.create_task(coroutine);background.add(task);task.add_done_callback(background.discard)
 
 async def close(s):
-    for task in [s.task,s.boot,s.relogin]:
+    for task in [s.task,s.boot,s.relogin,s.qual_task]:
         if task and not task.done():
             task.cancel()
             with suppress(asyncio.CancelledError):await task
@@ -109,6 +125,7 @@ async def cleanup():
 
 @asynccontextmanager
 async def lifespan(app):
+    handoffs.prune()  # retention: drop handoff records older than HANDOFF_RETENTION_DAYS
     tasks=[asyncio.create_task(cleanup()),asyncio.create_task(warm_up())]
     # Sign-in needs the device location; read it before the first visitor waits for it.
     if config.LOCAL_DEVICE_LOCATION and has_login_credentials():tasks.append(asyncio.create_task(device_location()))
@@ -243,7 +260,7 @@ async def screen(id:str,request:Request):
     except Exception:return Response(status_code=204)
 
 async def execute(s,message):
-    started=time.monotonic();answered=False
+    started=time.monotonic();answered=False;handbook=None
     try:
         if declined(message):
             s.opted_out=True
@@ -258,16 +275,19 @@ async def execute(s,message):
         if reply:
             s.say(reply)
             return
+        if s.voice_enabled:s.say(ACKS['question' if QUESTION.search(message) else 'action'],kind='ack')
+        # The handbook answer does not depend on the plan: start it now so the two model calls overlap.
+        handbook=asyncio.create_task(docs.answer(message)) if QUESTION.search(message) else None
         selected,source=await plan(message,s.last_feature)
         if s.timings:s.timings[-1].update(plan_ms=round((time.monotonic()-s.turn_started)*1000),plan_source=source)
         if selected.feature=='unknown':
             # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
-            s.say((await docs.answer(message))['text'])
+            s.say((await (handbook or docs.answer(message)))['text'])
             return
         f=FEATURES[selected.feature];s.last_feature=f['id']
         s.worker.notify=s.say
         # Questions get an answer from the handbook when it has one; the reviewed catalogue text is the fallback.
-        grounded=await docs.answer(message) if QUESTION.search(message) or not selected.demo else None
+        grounded=await handbook if handbook else await docs.answer(message) if not selected.demo else None
         answered=bool(grounded and grounded['grounded'])
         if not selected.demo:
             s.say(grounded['text'] if grounded and grounded['grounded'] else ' '.join(f['facts']));return
@@ -287,6 +307,7 @@ async def execute(s,message):
             if not overview_only:s.shown.add(f['id'])
             s.say(result)
         if not answered:s.say(f['facts'][1])
+        discover(s)
     except asyncio.CancelledError:
         for step in s.steps:
             if step['status']=='running':step['status']='stopped';step['detail']='Stopped by the visitor.'
@@ -306,8 +327,12 @@ async def execute(s,message):
         for step in s.steps:
             if step['status']=='running':step['status']='failed';step['detail']=s.last_error
     finally:
+        if handbook and not handbook.done():handbook.cancel()
         # Only aggregate timing; no transcript or records written to logs.
         s.last_turn_ms=round((time.monotonic()-started)*1000)
+        # Re-qualify after every turn in the background; a newer turn replaces a stale run.
+        if s.qual_task and not s.qual_task.done():s.qual_task.cancel()
+        s.qual_task=asyncio.create_task(requalify(s))
 
 @app.post('/api/sessions/{id}/turn',status_code=202)
 async def turn(id:str,body:Turn,request:Request):
@@ -357,6 +382,8 @@ class VoicePreference(BaseModel):
 async def voice_preference(id:str,body:VoicePreference,request:Request):
     s=owned(id,request);s.voice_enabled=body.enabled
     if not body.enabled:s.voice_cache.close()
+    else:
+        for text in ACKS.values():s.voice_cache.prepare(text)
     return {'enabled':body.enabled}
 
 @app.get('/api/sessions/{id}/speech')
@@ -371,6 +398,48 @@ async def speech(id:str,request:Request,message_id:str|None=None,message_index:i
         audio=await asyncio.shield(s.voice_cache.prepare(parts[part]))
         return Response(audio,media_type='audio/mpeg')
     except (Exception,asyncio.CancelledError):raise HTTPException(503,'Voice is unavailable. Use browser voice.')
+
+# Discovery: 2–4 short questions, one per turn, only about what is still unknown.
+DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a developer or a channel partner?'),
+    ('organisation.agents','How many people are on your sales team?'),
+    ('monthly_leads','Roughly how many new leads do you get in a month?'),
+    ('pain_points','What is the biggest problem with how you handle leads today?'),
+    ('process','What do you use to manage leads today: Excel, WhatsApp or another CRM?'),
+    ('influence','Would you be the one deciding on a CRM, or evaluating it for someone else?')]
+
+def known(q,path):
+    value=q
+    for part in path.split('.'):value=value.get(part) if isinstance(value,dict) else None
+    return value not in (None,'unknown',{'min':None,'max':None})
+
+def discover(s):
+    if s.opted_out or len(s.discovery_asked)>=4:return
+    q=(s.qual or {}).get('qualification') or rules_extract(transcript_of(s.messages)).model_dump()
+    for path,question in DISCOVERY:
+        if path not in s.discovery_asked and not known(q,path):
+            s.discovery_asked.append(path);s.say(question);return
+    if not q.get('consent') and 'consent' not in s.discovery_asked and len(s.discovery_asked)<4:
+        s.discovery_asked.append('consent')
+        s.say('Would you like someone from Leadrat to contact you? If yes, share an email or phone number.')
+
+async def requalify(s):
+    result=await qualify_session(list(s.messages))
+    if s.id not in sessions:return
+    s.qual=result;q=result['qualification']
+    if handoffs.eligible(q) and s.handoff_status=='not_requested':
+        s.handoff_status='pending'
+        s.handoff_status=await handoffs.deliver(handoffs.brief(s.id,q,s.shown))
+        s.say('Thank you. I have shared your details with the Leadrat team, and someone will contact you soon.' if s.handoff_status=='delivered'
+              else 'I could not hand your details to the team just now; a Leadrat specialist will review this conversation.')
+    elif q['route']=='graceful_close' and not s.closed_politely and not s.opted_out and q.get('icp_score') is not None:
+        s.closed_politely=True
+        s.say('Thank you for exploring Leadrat. It may not be the best fit for your business right now, but you are welcome to keep looking around.')
+
+@app.post('/mock-crm/handoff')
+async def mock_crm(request:Request):
+    # Stand-in for a CRM webhook: records each handoff_id once.
+    status,body=handoffs.receive(await request.json())
+    return JSONResponse(body,status_code=status)
 
 @app.get('/{filename}')
 async def static(filename:str):

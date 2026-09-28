@@ -70,7 +70,7 @@ async def main():
             deadline = time.time() + 30
             while time.time() < deadline:
                 turn = await fr.evaluate(f'window.__beaconLatency[{before}] || null')
-                if turn and turn.get('audio'): break
+                if turn and turn.get('answer_audio'): break
                 await asyncio.sleep(0.1)
             # Let the demo finish so the next question does not interrupt it (interruption is measured elsewhere).
             for _ in range(60):
@@ -88,16 +88,18 @@ if __name__ == '__main__':
     rows = []
     for i, t in enumerate(client):
         srv = server[i] if i < len(server) else {}
-        heard, sent, shown, audio = t.get('heard'), t.get('sent'), t.get('shown'), t.get('audio')
+        heard, sent, shown, audio, answer = t.get('heard'), t.get('sent'), t.get('shown'), t.get('audio'), t.get('answer_audio')
         rows.append({'question': QUESTIONS[i % len(QUESTIONS)],
                      'pause_before_send_ms': None if heard is None else sent - heard,
                      'sent_to_reply_shown_ms': None if shown is None else shown - sent,
                      'reply_shown_to_audio_ms': None if audio is None or shown is None else audio - shown,
                      'speech_result_to_audio_ms': None if audio is None or heard is None else audio - heard,
+                     'speech_result_to_answer_audio_ms': None if answer is None or heard is None else answer - heard,
+                     'server_answer_reply_ms': srv.get('answer_reply_ms'),
                      'server_plan_ms': srv.get('plan_ms'), 'server_first_reply_ms': srv.get('first_reply_ms'),
                      'server_first_tts_ms': srv.get('first_tts_ms'), 'plan_source': srv.get('plan_source')})
     stages = ['pause_before_send_ms', 'server_plan_ms', 'server_first_reply_ms', 'sent_to_reply_shown_ms', 'server_first_tts_ms',
-              'reply_shown_to_audio_ms', 'speech_result_to_audio_ms']
+              'reply_shown_to_audio_ms', 'speech_result_to_audio_ms', 'server_answer_reply_ms', 'speech_result_to_answer_audio_ms']
     summary = {s: {'p50': pct([r[s] for r in rows], 50), 'p95': pct([r[s] for r in rows], 95)} for s in stages}
     summary['turns'] = len(rows); summary['audio_started'] = sum(r['speech_result_to_audio_ms'] is not None for r in rows)
     out = ROOT / 'eval' / 'results'; out.mkdir(exist_ok=True)

@@ -10,3 +10,6 @@ artifacts/*
 knowledge/docs/
 # Eval outputs quote the internal handbook; commit only once the repository is private
 eval/results/
+
+# Handoff outbox and mock receiver hold contact details
+.outbox/

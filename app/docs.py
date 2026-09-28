@@ -147,6 +147,8 @@ SCHEMA = {'type':'object','additionalProperties':False,'required':['supported','
 
 async def compose(question, evidence):
     excerpts = [{'excerpt': i + 1, 'module': c['module'], 'section': c['section'], 'text': c['text'][:1800]} for i, (_, _, c) in enumerate(evidence)]
+    # Emails and phone numbers in a question are not needed to answer it and are not sent.
+    question = re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+|\+?\d[\d -]{8,}\d', '[redacted]', question)
     user = json.dumps({'question': question, 'reference_excerpts': excerpts}, ensure_ascii=False)
     if config.PROVIDER == 'openai':
         from .planner import USAGE

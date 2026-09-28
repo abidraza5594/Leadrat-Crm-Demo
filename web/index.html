@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Meet Beacon · Leadrat</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --ink: #173e39;
+            --cream: #f4f3e9;
+            --muted: #566b64
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: var(--cream);
+            color: var(--ink);
+            font-family: 'Segoe UI', sans-serif
+        }
+
+        header {
+            height: 98px;
+            max-width: 1260px;
+            margin: auto;
+            padding: 0 50px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #d6ddd2
+        }
+
+        .brand {
+            font-size: 26px;
+            letter-spacing: -1px;
+            font-weight: 750
+        }
+
+        .brand i {
+            display: inline-block;
+            width: 18px;
+            height: 23px;
+            background: #1b7165;
+            border-radius: 2px 10px 2px 2px;
+            transform: skewY(-12deg);
+            margin-right: 9px
+        }
+
+        .pill {
+            font-size: 12px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            border: 1px solid #b8c8bc;
+            padding: 9px 12px;
+            border-radius: 5px
+        }
+
+        main {
+            max-width: 1260px;
+            margin: auto;
+            padding: 90px 50px 100px
+        }
+
+        .eyebrow {
+            font-size: 12px;
+            font-weight: 650;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 10px
+        }
+
+        .eyebrow:before {
+            content: '';
+            width: 23px;
+            height: 2px;
+            background: #3b8771
+        }
+
+        h1 {
+            font-size: clamp(48px, 6.6vw, 88px);
+            line-height: 1.03;
+            letter-spacing: -4px;
+            max-width: 850px;
+            font-weight: 550;
+            margin: 30px 0
+        }
+
+        h1 span {
+            color: #518271
+        }
+
+        p.intro {
+            max-width: 590px;
+            font-size: 19px;
+            line-height: 1.65;
+            color: var(--muted)
+        }
+
+        button {
+            font: inherit;
+            cursor: pointer
+        }
+
+        .cta {
+            background: #174e45;
+            border: 0;
+            color: #fff;
+            padding: 18px 23px;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 600;
+            margin: 20px 0 16px
+        }
+
+        .cta span {
+            margin-left: 30px
+        }
+
+        .note {
+            font-size: 12px;
+            color: var(--muted)
+        }
+
+        .bottom {
+            margin-top: 70px;
+            padding-top: 28px;
+            border-top: 1px solid #cbd5c9;
+            display: grid;
+            grid-template-columns: 1fr 1.1fr 1.1fr;
+            gap: 45px
+        }
+
+        .bottom .number {
+            font-size: 12px;
+            color: #648576
+        }
+
+        .bottom h2 {
+            font-size: 17px;
+            font-weight: 650;
+            margin: 10px 0
+        }
+
+        .bottom p {
+            font-size: 14px;
+            line-height: 1.7;
+            color: var(--muted);
+            margin: 0
+        }
+
+        footer {
+            max-width: 1260px;
+            margin: auto;
+            padding: 25px 50px 100px;
+            display: flex;
+            gap: 20px;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #64746c
+        }
+
+        button:focus-visible {
+            outline: 3px solid #cc9d48;
+            outline-offset: 4px
+        }
+
+        @media(max-width:650px) {
+            header {
+                height: 80px;
+                padding: 0 24px
+            }
+
+            main {
+                padding: 60px 24px 55px
+            }
+
+            h1 {
+                letter-spacing: -2px
+            }
+
+            .bottom {
+                grid-template-columns: 1fr;
+                gap: 25px;
+                margin-top: 45px
+            }
+
+            footer {
+                padding: 25px 24px 105px;
+                flex-direction: column
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="brand"><i aria-hidden="true"></i>leadrat</div>
+        <div class="pill">Meet Beacon</div>
+    </header>
+    <main>
+        <div class="eyebrow">Your guided product experience</div>
+        <h1>A real CRM.<br>A conversation.<br><span>Your next move.</span></h1>
+        <p class="intro">Get to know Leadrat with Beacon. Ask a question, explore the product, and see a live
+            walkthrough shaped around what matters to you.</p><button class="cta" data-beacon-open>Start exploring <span
+                aria-hidden="true">↗</span></button>
+        <div class="note">Opens an interactive demo · Voice is optional</div>
+        <section class="bottom" aria-label="How it works">
+            <article><span class="number">01 / ASK</span>
+                <h2>Bring your questions.</h2>
+                <p>Start with leads, projects, or where your enquiries come from. Ask in your own words.</p>
+            </article>
+            <article><span class="number">02 / EXPLORE</span>
+                <h2>See the actual workspace.</h2>
+                <p>Follow along as Beacon navigates a real CRM session. The screen shows what is happening.</p>
+            </article>
+            <article><span class="number">03 / GO AT YOUR PACE</span>
+                <h2>You lead the conversation.</h2>
+                <p>Listen to replies, ask a follow-up, or stop the walkthrough whenever you need.</p>
+            </article>
+        </section>
+    </main>
+    <footer><span>Leadrat / Product experience</span><span>A live demonstration powered by Beacon</span></footer>
+    <script src="http://localhost:8010/widget.js" defer></script>
+</body>
+
+</html>

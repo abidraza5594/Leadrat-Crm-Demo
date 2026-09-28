@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Beacon · Live demo</title>
+    <link rel="stylesheet" href="/widget.css">
+    <script src="/widget-client.js" defer></script>
+</head>
+
+<body>
+    <header class="top"><a class="brand" href="#">beacon<span>by leadrat</span></a>
+        <div class="session-state"><i id="status-dot"></i><span id="status">Not connected</span></div><button id="close"
+            class="icon-button" aria-label="Close demo">×</button>
+    </header>
+    <main>
+        <section class="viewer" aria-label="Live CRM screen">
+            <div class="viewer-bar"><span><i class="screen-icon" aria-hidden="true"></i>Live workspace</span><span
+                    id="screen-status">Waiting for a session</span></div>
+            <div class="screen-area"><img id="screen" alt="Live view of the Leadrat CRM workspace" hidden>
+                <div id="screen-empty">
+                    <div class="empty-icon" aria-hidden="true">↗</div>
+                    <div class="eyebrow">A REAL PRODUCT WALKTHROUGH</div>
+                    <h1>Let’s take a look.</h1>
+                    <p id="empty-description">Start a session to explore Leadrat with Beacon. Your live workspace will
+                        appear here.</p>
+                </div>
+            </div>
+            <div class="viewer-footer"><span id="viewer-caption">You can stop the walkthrough at any time.</span><span
+                    class="live-label">BEACON / LIVE DEMO</span></div>
+            <section id="activity" hidden aria-label="Walkthrough activity">
+                <div class="activity-title">Walkthrough activity</div>
+                <ol id="steps"></ol>
+            </section>
+        </section>
+        <aside class="conversation">
+            <div class="chat-heading">
+                <div class="avatar" aria-hidden="true">b.</div>
+                <div>
+                    <h2>Your product guide</h2>
+                    <p>Ask. Explore. Make it yours.</p>
+                </div>
+            </div>
+            <div id="notice" class="notice" role="status" hidden></div>
+            <div id="error" class="error" role="alert" hidden></div>
+            <div id="messages" class="messages" role="log" aria-live="polite" aria-label="Conversation">
+                <div class="welcome">
+                    <div class="eyebrow">HELLO, I'M BEACON</div>
+                    <h3>What would you <br>like to explore?</h3>
+                    <p>I can guide you through the live workspace and answer questions along the way.</p>
+                </div>
+            </div>
+            <div class="actions"><button id="start" class="primary">Start a session <span
+                        aria-hidden="true">↗</span></button>
+                <div id="suggestions" class="suggestions" hidden><button data-prompt="Show leads">Show leads
+                        ↗</button><button data-prompt="How to change status">Change lead status ↗</button><button
+                        data-prompt="Explain lead sources">Explain lead sources ↗</button></div>
+                <form id="composer"><label class="sr-only" for="message">Your message</label><textarea id="message"
+                        rows="2" placeholder="Ask Beacon a question…" maxlength="3000" disabled></textarea><button
+                        id="send" type="submit" aria-label="Send message" disabled>↑</button></form>
+                <div class="toolbar"><button id="voice" aria-pressed="true">🔊 Voice on</button><button id="replay"
+                        disabled>↻ Replay reply</button><button id="stop" disabled>■ Stop</button></div>
+                <p id="voice-status" class="voice-status" role="status">Voice on · Beacon reads each reply aloud.</p>
+                <p class="voice-disclosure">Voice may use an online service to read guide replies.</p>
+                <div class="end-row"><span id="privacy">A live, guided product session</span><button id="end"
+                        disabled>End session</button></div>
+            </div>
+        </aside>
+    </main>
+</body>
+
+</html>

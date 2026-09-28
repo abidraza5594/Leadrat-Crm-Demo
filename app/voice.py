@@ -1,6 +1,7 @@
 """Bounded in-memory speech cache; concurrent callers share synthesis."""
 import asyncio
 import hashlib
+import time
 from collections import OrderedDict
 import httpx
 from . import config
@@ -9,6 +10,8 @@ class VoiceCache:
     def __init__(self):
         self.tasks=OrderedDict()
         self.limit=asyncio.Semaphore(2)
+        # text hash -> synthesis milliseconds (latency measurement only; no text is stored).
+        self.timings={}
 
     def prepare(self,text):
         text=text[:3000]
@@ -26,6 +29,11 @@ class VoiceCache:
         return task
 
     async def synthesize(self,text):
+        started=time.monotonic()
+        try:return await self._synthesize(text)
+        finally:self.timings[hashlib.sha256(text[:3000].encode()).hexdigest()]=round((time.monotonic()-started)*1000)
+
+    async def _synthesize(self,text):
         async with self.limit:
             async with asyncio.timeout(12):
                 if config.TTS_PROVIDER=='edge':

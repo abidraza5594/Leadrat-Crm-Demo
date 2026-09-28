@@ -33,7 +33,13 @@ def speech_parts(text):
     for sentence in re.split(r'(?<=[.!?])\s+',text.strip()):
         if parts and len(parts[-1])+len(sentence)<200:parts[-1]+=' '+sentence
         elif sentence:parts.append(sentence)
-    return parts or [text]
+    parts=parts or [text]
+    # The first clip decides time-to-first-audio: keep it to ~90 characters, split at a comma or space.
+    first=parts[0]
+    if len(first)>90:
+        cut=max(first.rfind(', ',40,90),first.rfind(' ',40,90))
+        if cut>0:parts=[first[:cut+1].strip(),first[cut+1:].strip()]+parts[1:]
+    return parts
 
 @dataclass
 class Session:
@@ -55,6 +61,9 @@ class Session:
     relogin:asyncio.Task|None=None
     last_turn:float=0
     last_turn_ms:int|None=None
+    # Per-turn stage timings (ms since the turn was received); aggregate numbers only, no transcript.
+    timings:list=field(default_factory=list)
+    turn_started:float=0
     auth_checked:float=0
     auth_lost:float|None=None
     voice_enabled:bool=False
@@ -62,7 +71,10 @@ class Session:
     def say(self,text):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
-        self.messages.append({'id':secrets.token_urlsafe(12),'role':'assistant','text':text,'parts':parts})
+        message_id=secrets.token_urlsafe(12)
+        self.messages.append({'id':message_id,'role':'assistant','text':text,'parts':parts})
+        if self.timings and 'first_reply_ms' not in self.timings[-1]:
+            self.timings[-1].update(first_reply_ms=round((time.monotonic()-self.turn_started)*1000),first_message_id=message_id,first_part_hash=__import__('hashlib').sha256(parts[0][:3000].encode()).hexdigest())
         if self.voice_enabled:
             for part in parts:self.voice_cache.prepare(part)
         self.messages=self.messages[-80:]
@@ -249,6 +261,7 @@ async def execute(s,message):
             s.say(reply)
             return
         selected,source=await plan(message,s.last_feature)
+        if s.timings:s.timings[-1].update(plan_ms=round((time.monotonic()-s.turn_started)*1000),plan_source=source)
         if selected.feature=='unknown':
             # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
             s.say((await docs.answer(message))['text'])
@@ -310,9 +323,21 @@ async def turn(id:str,body:Turn,request:Request):
         s.task.cancel()
         with suppress(asyncio.CancelledError):await s.task
     s.last_turn=time.monotonic();s.last_error=None;s.steps=[]
+    s.turn_started=s.last_turn;s.timings=(s.timings+[{'turn':len(s.timings)+1}])[-200:]
     s.messages.append({'id':secrets.token_urlsafe(12),'role':'user','text':message})
     s.task=asyncio.create_task(execute(s,message))
     return {'accepted':True}
+
+@app.get('/api/sessions/{id}/timings')
+async def timings(id:str,request:Request):
+    s=owned(id,request)
+    rows=[]
+    for t in s.timings:
+        row={k:v for k,v in t.items() if k not in {'first_part_hash'}}
+        synth=s.voice_cache.timings.get(t.get('first_part_hash'))
+        if synth is not None:row['first_tts_ms']=synth
+        rows.append(row)
+    return {'turns':rows}
 
 @app.post('/api/sessions/{id}/stop')
 async def stop(id:str,request:Request):

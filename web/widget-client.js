@@ -15,6 +15,12 @@
   // A new question may be sent while Beacon is working; it interrupts the running demonstration.
   const canSend = () => active() && ['ready','active','login_required'].includes(state?.status) && !sending && !stopPending;
   let voiceHold = -1;
+  // Latency marks per turn (performance.now() ms): heard = final speech result, sent, reply shown, audio playing.
+  const latency = window.__beaconLatency = [];
+  let heardAt = null;
+  // Stage timings from the server for this session (used by eval/latency.py); the token itself is not exposed.
+  window.__beaconTimings = () => session ? request(endpoint('/timings')).then(r=>r.json()) : Promise.resolve(null);
+  const mark = (name) => { const turn = latency[latency.length - 1]; if (turn && turn[name] == null) turn[name] = Math.round(performance.now()); };
   function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
   function show(el, text) { setText(el, text || ''); el.hidden = !text; }
   const error = text => show(ui.error, text);
@@ -88,7 +94,7 @@
     if (voiceHold >= 0 && users > voiceHold) voiceHold = -1;
     if (voiceHold < 0) {
       const lastUser = messages.map(m=>m.role).lastIndexOf('user');
-      messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else voiceQueue.offer(m); } });
+      messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else { voiceQueue.offer(m); mark('shown'); } } });
     }
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
     if (next.status === 'login_required' && hasFrame) clearScreen();
@@ -109,7 +115,7 @@
       if(target!==session || !active())return;
       failures++;setText(ui['screen-status'],'Connection interrupted');error(e.message || 'Unable to reach Beacon. Check that the demo service is running.');
       if([401,403,404,410].includes(e.status)){await endSession(false);notice('This session is no longer available. Start a new session to reconnect.');return;}
-    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy?350:700));}
+    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy?150:700));}
   }
 
   // ---- Live screen: its own loop, decode before swapping, never blank on a transient miss.
@@ -192,6 +198,7 @@
         player.onended = () => done('ok'); player.onerror = () => done('failed');
         player.src = url;
         player.play().then(()=>{
+          mark('audio');
           status('Speaking…');
           const seconds = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 40;
           watchdog = setTimeout(()=>done('ok'), (seconds + 4) * 1000);
@@ -212,6 +219,7 @@
         const watchdog = setTimeout(()=>done('ok'), 5000 + text.length * 110);
         utterance = u; stopCurrent = () => { window.speechSynthesis.cancel(); done('stopped'); };
         u.onend = () => done('ok'); u.onerror = e => done(e.error === 'not-allowed' ? 'blocked' : 'failed');
+        u.onstart = () => mark('audio');
         window.speechSynthesis.resume(); window.speechSynthesis.speak(u);
         status('Speaking with your browser voice…');
       });
@@ -322,7 +330,7 @@
     function onResult(e) {
       let finals = '', interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finals += ' ' + t; else interim += ' ' + t; }
-      if (finals.trim() && !isEcho(finals)) heard += ' ' + finals.trim();
+      if (finals.trim() && !isEcho(finals)) { heard += ' ' + finals.trim(); heardAt = Math.round(performance.now()); }
       const live = interim.trim() && !isEcho(interim) ? interim.trim() : '';
       const current = (heard + ' ' + live).trim();
       if (!current) return;
@@ -332,7 +340,8 @@
       ui.message.value = [typed, current].filter(Boolean).join(' '); controls();
       clearTimeout(flushTimer);
       // Send after a short pause, so a question spoken with a breath in the middle is not split in two.
-      if (heard.trim()) flushTimer = setTimeout(flush, live ? 1400 : 800);
+      // Chrome sends a final result only after the visitor pauses, so a short grace period is enough.
+      if (heard.trim()) flushTimer = setTimeout(flush, live ? 900 : 300);
     }
     function schedule(ms) { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, ms); }
     async function listen() {
@@ -406,6 +415,7 @@
   async function send(message) {
     if(!message.trim() || !canSend())return;
     const target=session,text=message.trim(),interrupt=!!state?.busy;
+    latency.push({heard:heardAt,sent:Math.round(performance.now()),voice:voiceQueue.enabled});heardAt=null;
     voiceQueue.unlock();voiceQueue.cancel();voiceHold=(state?.messages||[]).filter(m=>m.role==='user').length;sending=true;error('');lastStateError='';controls();
     const post=async body=>{
       try{return await request(endpoint('/turn',target),{method:'POST',body:JSON.stringify(body)},target);}

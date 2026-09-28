@@ -1,0 +1,44 @@
+{
+ "accepted": 200,
+ "rejected": 0,
+ "rejections": [],
+ "identical_visitor_text": 0,
+ "families": 40,
+ "dev_families": [
+  "brokerage/small_team_whatsapp",
+  "channel_partner/unknown_influence",
+  "developer/hinglish_consent",
+  "developer/marketing_exec_no_authority",
+  "other_real_estate/partial",
+  "other_real_estate/property_management"
+ ],
+ "split_sizes": {
+  "train": 169,
+  "dev": 31
+ },
+ "routes": {
+  "sales_handoff": 33,
+  "human_review": 109,
+  "graceful_close": 38,
+  "nurture": 20
+ },
+ "organisation_types": {
+  "brokerage": 67,
+  "developer": 66,
+  "channel_partner": 37,
+  "other_real_estate": 19,
+  "unrelated": 10,
+  "unknown": 1
+ },
+ "languages": {
+  "en": 135,
+  "hinglish": 61,
+  "hi": 4
+ },
+ "partial": 81,
+ "scored_complete": 64,
+ "sha256": {
+  "train": "4a454998719cd40dac8078fcc87c99f852935bfae42631ecc07d2ccb26b573aa",
+  "dev": "78d4181d016dd6ed2baf1d6b1b56926241cee28f21b8d53a180604d3e541d015"
+ }
+}

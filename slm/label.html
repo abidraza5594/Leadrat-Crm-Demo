@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Beacon · Hand labelling</title>
+<style>
+:root{font:14px/1.45 'Segoe UI',system-ui,sans-serif;color:#1f3a34;background:#f4f6f1;--line:#d9e1d6;--teal:#1b5c4f;--muted:#607269}
+*{box-sizing:border-box}body{margin:0}
+header{display:flex;gap:14px;align-items:center;padding:10px 18px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2;flex-wrap:wrap}
+header h1{font-size:17px;margin:0}header .grow{flex:1}
+.bar{height:8px;width:220px;background:#e3e9df;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--teal)}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,520px);gap:16px;padding:16px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px}
+.turn{padding:8px 10px;border-radius:8px;margin:0 0 8px;border:1px solid transparent}
+.turn.beacon{background:#f3f5f1;color:var(--muted)}
+.turn.visitor{background:#eaf3ee;cursor:pointer}.turn.visitor:hover{border-color:#8fb9a4}
+.turn.cited{border-color:#f5a623;box-shadow:0 0 0 2px #f5a62355}
+.turn b{font-size:11px;letter-spacing:.5px;text-transform:uppercase;margin-right:6px}
+fieldset{border:0;padding:0;margin:0 0 10px}legend{font-weight:650;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:4px}
+.row{display:grid;grid-template-columns:130px minmax(0,1fr) 70px;gap:6px;align-items:start;margin-bottom:6px}
+.row label{font-size:13px;padding-top:6px}
+input,select,textarea{font:inherit;width:100%;padding:5px 7px;border:1px solid #c9d4c6;border-radius:6px;background:#fff}
+textarea{min-height:48px;resize:vertical}
+.ev{font-size:12px;text-align:center;background:#fbfaf5}.ev:focus,.focus-ev{outline:2px solid #f5a623}
+.small{font-size:12px;color:var(--muted)}
+.score{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);margin:10px -14px -14px;padding:10px 14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.route{font-weight:700;padding:3px 8px;border-radius:5px;background:#eef3eb}
+button{font:inherit;border:0;border-radius:7px;padding:8px 12px;cursor:pointer;background:#e7ede4;color:#1f3a34}
+button.primary{background:var(--teal);color:#fff}button:disabled{opacity:.5;cursor:not-allowed}
+.err{color:#a4482f;font-size:12px}
+.list{display:flex;flex-wrap:wrap;gap:4px;max-height:84px;overflow:auto}
+.list a{font-size:11px;padding:2px 6px;border-radius:4px;background:#eef2ec;color:#1f3a34;text-decoration:none}
+.list a.labelled{background:#cfe6d7}.list a.unusable{background:#f4d9d1}.list a.current{outline:2px solid var(--teal)}
+</style></head><body>
+<header><h1>Beacon · Hand labelling</h1><span id="pos" class="small"></span><div class="bar"><i id="progress"></i></div><span id="count" class="small"></span>
+<span class="grow"></span><label class="small">Labeller <input id="labeller" style="width:140px"></label></header>
+<main>
+<section class="card"><div class="small" style="margin-bottom:8px">Click a <b>visitor</b> turn to add it as evidence for the field you are editing (orange box). Only label what the visitor actually said.</div>
+<div id="transcript"></div><div class="list" id="list"></div></section>
+<section class="card"><form id="form" autocomplete="off"></form>
+<div class="score"><span>Score: <b id="score">–</b> <span class="small" id="range"></span></span><span class="route" id="route">–</span><span class="err" id="errors"></span>
+<span class="grow" style="flex:1"></span><button type="button" id="prev">← Prev</button><button type="button" id="unusable">Unusable</button><button type="button" class="primary" id="save">Save &amp; next →</button></div></section>
+</main>
+<script>
+const F=[
+ ['Speaker','role','Role (as stated)','text',null,'role'],
+ ['Speaker','seniority','Seniority','select',['unknown','owner','executive','manager','individual_contributor'],'seniority'],
+ ['Organisation','organisation.name','Company name','text',null,'organisation.name'],
+ ['Organisation','organisation.type','Organisation type','select',['unknown','brokerage','developer','channel_partner','other_real_estate','unrelated'],'organisation.type'],
+ ['Organisation','organisation.agents','Sales agents (one number; band-spanning range → blank)','number',null,'organisation.agents'],
+ ['Business','pain_points','Pain points (one per line)','list',null,'pain_points'],
+ ['Business','current_tooling','Current tools (one per line)','list',null,'current_tooling'],
+ ['Business','process','Process','select',['unknown','manual','unsatisfied_crm','satisfied_crm'],'process'],
+ ['Business','geography.countries','Countries (one per line)','list',null,'geography'],
+ ['Business','geography.cities','Cities (one per line)','list',null,'geography'],
+ ['Business','monthly_leads.min','Monthly leads min','number',null,'monthly_leads'],
+ ['Business','monthly_leads.max','Monthly leads max','number',null,'monthly_leads'],
+ ['Business','lead_sources','Lead sources (one per line)','list',null,'lead_sources'],
+ ['Intent','influence','Purchase influence','select',['unknown','approver','sponsored_evaluator','none'],'influence'],
+ ['Intent','next_step','Next step','select',['unknown','within_30_days','later','declined'],'next_step'],
+ ['Intent','consent','Explicit consent to sales contact','bool',null,'consent'],
+ ['Contact','contact.name','Name','text',null,'contact'],['Contact','contact.email','Email','text',null,'contact'],['Contact','contact.phone','Phone','text',null,'contact']];
+const $=id=>document.getElementById(id), form=$('form');
+let items=[], index=0, current=null, evidence={}, focusEv=null, started=Date.now(), frozen=false;
+try{$('labeller').value=localStorage.getItem('beacon.labeller')||'';}catch{}
+$('labeller').addEventListener('input',()=>{try{localStorage.setItem('beacon.labeller',$('labeller').value)}catch{}});
+function buildForm(){let group='';form.replaceChildren();
+ for(const [g,key,label,type,opts,ev] of F){
+  if(g!==group){group=g;const fs=document.createElement('fieldset');fs.innerHTML='<legend>'+g+'</legend>';fs.dataset.group=g;form.append(fs);}
+  const row=document.createElement('div');row.className='row';const l=document.createElement('label');l.textContent=label;row.append(l);let input;
+  if(type==='select'){input=document.createElement('select');opts.forEach(o=>input.add(new Option(o,o)));}
+  else if(type==='list'){input=document.createElement('textarea');input.placeholder='blank = not discussed';}
+  else if(type==='bool'){input=document.createElement('input');input.type='checkbox';input.style.width='auto';}
+  else{input=document.createElement('input');input.type=type==='number'?'number':'text';if(type==='number')input.min=0;}
+  input.name=key;input.dataset.type=type;const cell=document.createElement('div');cell.append(input);
+  if(type==='list'){const none=document.createElement('label');none.className='small';none.innerHTML='<input type="checkbox" style="width:auto" data-none="'+key+'"> explicitly none';cell.append(none);}
+  row.append(cell);const e=document.createElement('input');e.className='ev';e.placeholder='turns';e.dataset.ev=ev;e.title='Evidence turn ids, e.g. 2,4';row.append(e);
+  form.lastChild.append(row);}
+ form.addEventListener('input',()=>{syncEvidence();rescore();});
+ form.querySelectorAll('.ev').forEach(e=>e.addEventListener('focus',()=>{focusEv=e.dataset.ev;highlight();}));
+ form.querySelectorAll('input:not(.ev),select,textarea').forEach(i=>i.addEventListener('focus',()=>{const row=i.closest('.row');focusEv=row.querySelector('.ev').dataset.ev;highlight();}));}
+const set=(o,path,v)=>{const p=path.split('.');let t=o;p.slice(0,-1).forEach(k=>t=t[k]??=({}));t[p.at(-1)]=v;};
+const get=(o,path)=>path.split('.').reduce((t,k)=>t==null?undefined:t[k],o);
+function syncEvidence(){form.querySelectorAll('.ev').forEach(e=>{const ids=e.value.split(/[ ,]+/).map(Number).filter(Boolean);if(ids.length)evidence[e.dataset.ev]=[...new Set(ids)];else delete evidence[e.dataset.ev];});
+ form.querySelectorAll('.ev').forEach(e=>{e.value=(evidence[e.dataset.ev]||[]).join(',');});highlight();}
+function readLabel(){const out={};
+ for(const [, key,, type] of F){const el=form.elements[key];let v;
+  if(type==='select')v=el.value;else if(type==='bool')v=el.checked;
+  else if(type==='number')v=el.value===''?null:Math.max(0,parseInt(el.value,10));
+  else if(type==='list'){const none=form.querySelector('[data-none="'+key+'"]').checked;const items=el.value.split('\n').map(s=>s.trim()).filter(Boolean);v=none?[]:items.length?items:null;}
+  else v=el.value.trim()||null;set(out,key,v);}
+ out.evidence=Object.fromEntries(Object.entries(evidence).filter(([,v])=>v.length));return out;}
+function fill(label){form.reset();evidence={};
+ if(label){for(const [, key,, type] of F){const v=get(label,key),el=form.elements[key];
+   if(type==='bool')el.checked=!!v;else if(type==='list'){form.querySelector('[data-none="'+key+'"]').checked=Array.isArray(v)&&!v.length;el.value=(v||[]).join('\n');}
+   else el.value=v??(type==='select'?'unknown':'');}
+  evidence=JSON.parse(JSON.stringify(label.evidence||{}));}
+ form.querySelectorAll('.ev').forEach(e=>{e.value=(evidence[e.dataset.ev]||[]).join(',');});rescore();highlight();}
+function highlight(){const cited=new Set(focusEv?evidence[focusEv]||[]:[]);document.querySelectorAll('.turn').forEach(t=>t.classList.toggle('cited',cited.has(+t.dataset.turn)));
+ form.querySelectorAll('.ev').forEach(e=>e.classList.toggle('focus-ev',e.dataset.ev===focusEv));}
+let scoring=0;async function rescore(){const n=++scoring;const r=await (await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(readLabel())})).json();if(n!==scoring)return;
+ $('errors').textContent=r.valid?'':r.errors.join('; ');$('score').textContent=r.valid?(r.icp_score??'unknown'):'–';$('range').textContent=r.valid?'range '+r.score_range.join('–'):'';$('route').textContent=r.valid?r.route:'–';}
+function renderList(){$('list').replaceChildren(...items.map((it,i)=>{const a=document.createElement('a');a.href='#';a.textContent=it.id;a.className=(it.status||'')+(i===index?' current':'');a.onclick=e=>{e.preventDefault();open(i)};return a;}));
+ const done=items.filter(i=>i.status==='labelled').length;$('count').textContent=done+' labelled (target 100)'+(frozen?' · FROZEN':'');$('progress').style.width=Math.min(100,done)+'%';}
+async function open(i){index=Math.max(0,Math.min(items.length-1,i));current=await (await fetch('/api/item/'+items[index].id)).json();started=Date.now();
+ $('pos').textContent=current.id+' · '+(index+1)+'/'+items.length+' · '+(current.language||'');
+ $('transcript').replaceChildren(...current.transcript.map(t=>{const d=document.createElement('div');d.className='turn '+t.speaker;d.dataset.turn=t.turn_id;d.innerHTML='<b></b><span></span>';d.firstChild.textContent=t.turn_id+' · '+t.speaker;d.lastChild.textContent=t.text;
+  if(t.speaker==='visitor')d.onclick=()=>{if(!focusEv)return;const ids=new Set(evidence[focusEv]||[]);ids.has(t.turn_id)?ids.delete(t.turn_id):ids.add(t.turn_id);evidence[focusEv]=[...ids].sort((a,b)=>a-b);fill({...readLabel(),evidence});};return d;}));
+ fill(current.saved?.label||null);renderList();window.scrollTo(0,0);}
+async function submit(status){const body={status,label:status==='labelled'?readLabel():null,labeller:$('labeller').value,seconds:Math.round((Date.now()-started)/1000)};
+ const r=await fetch('/api/label/'+current.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(!r.ok){$('errors').textContent=(await r.json()).detail;return;}items[index].status=status;
+ const next=items.findIndex((it,i)=>i>index&&!it.status);open(next>=0?next:index+1);}
+$('save').onclick=()=>submit('labelled');$('unusable').onclick=()=>submit('unusable');$('prev').onclick=()=>open(index-1);
+(async()=>{buildForm();const d=await (await fetch('/api/items')).json();items=d.items;frozen=d.frozen;if(frozen){$('save').disabled=$('unusable').disabled=true;}
+ if(!items.length){$('transcript').textContent='No conversations in slm/eval/pool.jsonl yet.';return;}const first=items.findIndex(i=>!i.status);open(first>=0?first:0);})();
+</script></body></html>

@@ -19,10 +19,30 @@ class Plan(BaseModel):
     feature: Literal[tuple(FEATURES) + ('unknown',)]
     demo: bool
 
+# Hindi speech recognition returns Devanagari. Common CRM words are romanised so reviewed shortcuts,
+# keyword fallback and opt-out detection still apply; the model still receives the original text.
+DEVANAGARI={w:r for r,words in {
+    'lead':'लीड','leads':'लीड्स','status':'स्टेटस','stage':'स्टेज','note':'नोट','notes':'नोट्स नोटस','meeting':'मीटिंग',
+    'site':'साइट','visit':'विज़िट विजिट','whatsapp':'व्हाट्सएप व्हाट्सऐप वॉट्सऐप वॉट्सएप','email':'ईमेल','mail':'मेल',
+    'project':'प्रोजेक्ट','projects':'प्रोजेक्ट्स','task':'टास्क','tasks':'टास्क्स','property':'प्रॉपर्टी प्रोपर्टी',
+    'properties':'प्रॉपर्टीज','dashboard':'डैशबोर्ड','history':'हिस्ट्री','document':'डॉक्यूमेंट','documents':'डॉक्यूमेंट्स',
+    'source':'सोर्स','filter':'फ़िल्टर फिल्टर','search':'सर्च','bulk':'बल्क','upload':'अपलोड','sms':'एसएमएस','call':'कॉल',
+    'assign':'असाइन','reassign':'रीअसाइन','schedule':'शेड्यूल','add':'ऐड एड','naya':'नया','nayi':'नई','banao':'बनाओ बनाएं',
+    'banana':'बनाना','jodo':'जोड़ें जोड़ो','jodna':'जोड़ना','badle':'बदलें बदले','badalna':'बदलना','badlo':'बदलो',
+    'change':'चेंज','update':'अपडेट','dikhao':'दिखाओ दिखाइए दिखाएं','dikha':'दिखा','kholo':'खोलो','kaise':'कैसे',
+    'kaha':'कहाँ कहां','kya':'क्या','ka':'का','ki':'की','ke':'के','ko':'को','me':'में मे','hai':'है','hain':'हैं',
+    'kare':'करें करे','karo':'करो','karna':'करना','mujhe':'मुझे','mere':'मेरे','mera':'मेरा','sirf':'सिर्फ','batao':'बताओ',
+    'mat':'मत','contact':'संपर्क','namaste':'नमस्ते','namaskar':'नमस्कार','hello':'हेलो हैलो','hi':'हाय',
+    'dhanyavaad':'धन्यवाद','shukriya':'शुक्रिया','thank':'थैंक','you':'यू',
+}.items() for w in words.split()}
+
+def romanize(text: str) -> str:
+    return re.sub(r'[ऀ-ॣ०-ॿ]+',lambda m:DEVANAGARI.get(m.group(0),m.group(0)),text.replace('।',' '))
+
 GREETING=r'(hi+|hey+|hello+|hel+o|hola|namaste|namaskar|good (morning|afternoon|evening)|yo)( (there|beacon|team|ji))?'
 def small_talk(message: str) -> str | None:
     """Fixed replies for greetings, thanks and help; no model call and no CRM action."""
-    text=re.sub(r'[^\w\s]','',message.lower()).strip()
+    text=re.sub(r'[^\w\s]','',romanize(message).lower()).strip()
     if re.fullmatch(GREETING,text):
         return 'Hello! What would you like to explore in Leadrat? You can ask to see Leads, Projects, Tasks or the dashboard.'
     if re.fullmatch(r'(ok(ay)?\s*)?(thanks?|thank you|thx|ty|shukriya|dhanyavaad|dhanyawad)( (so much|a lot|beacon|ji))?',text):
@@ -93,17 +113,18 @@ def shortcut(message: str) -> Plan | None:
 async def plan(message: str, previous: str | None) -> tuple[Plan,str]:
     if message.strip().lower() in {'template','show template','use template','explain more','show me','demo'} and previous in FEATURES:
         return Plan(feature=previous,demo=True),'context_shortcut'
-    direct=shortcut(message)
-    if direct:return Plan(feature=direct.feature,demo=not explanation_only(message)),'reviewed_shortcut'
+    latin=romanize(message)
+    direct=shortcut(latin)
+    if direct:return Plan(feature=direct.feature,demo=not explanation_only(latin)),'reviewed_shortcut'
     try:selected,source=await classify(message,previous)
     except (httpx.HTTPError,ValueError,KeyError):
         # Budget exhausted, provider down or invalid output: reviewed keywords only, never a guess.
-        fallback=keyword_match(message)
+        fallback=keyword_match(latin)
         if fallback is None:raise
         selected,source=fallback,'keyword_fallback'
     if selected.feature=='unknown':return selected,source
     # The small model's demo flag is unreliable ("where do I see projects" -> false).
-    return Plan(feature=selected.feature,demo=not explanation_only(message)),source
+    return Plan(feature=selected.feature,demo=not explanation_only(latin)),source
 
 async def classify(message: str, previous: str | None) -> tuple[Plan,str]:
     catalogue=[{'id':f['id'],'title':f['title'],'keywords':f['keywords']} for f in FEATURES.values()]
@@ -139,4 +160,5 @@ async def classify(message: str, previous: str | None) -> tuple[Plan,str]:
         return Plan.model_validate_json(result.json()['message']['content']),'ollama'
 
 def declined(message: str) -> bool:
+    message=romanize(message)
     return bool(re.search(r"\b(?:do not|don't|dont|never)\s+(?:contact|call|email|follow[ -]?up)|\bno\s+(?:follow[ -]?up|further contact)|\bstop contacting|\bnot interested\b|\bcontact mat",message,re.I))

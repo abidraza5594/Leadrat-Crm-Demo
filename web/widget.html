@@ -57,12 +57,16 @@
                         ↗</button><button data-prompt="How to change status">Change lead status ↗</button><button
                         data-prompt="Explain lead sources">Explain lead sources ↗</button></div>
                 <form id="composer"><label class="sr-only" for="message">Your message</label><textarea id="message"
-                        rows="2" placeholder="Ask Beacon a question…" maxlength="3000" disabled></textarea><button
+                        rows="2" placeholder="Type or tap 🎤 and speak…" maxlength="3000" disabled></textarea><button
+                        id="mic" type="button" aria-pressed="false" aria-label="Talk to Beacon" title="Talk instead of typing"
+                        disabled><span aria-hidden="true">🎤</span></button><button
                         id="send" type="submit" aria-label="Send message" disabled>↑</button></form>
-                <div class="toolbar"><button id="voice" aria-pressed="true">🔊 Voice on</button><button id="replay"
-                        disabled>↻ Replay reply</button><button id="stop" disabled>■ Stop</button></div>
+                <div class="toolbar"><button id="voice" aria-pressed="true">🔊 Voice on</button><button id="mic-lang"
+                        type="button" title="Language you speak in">🗣 English</button><button id="replay"
+                        disabled>↻ Replay</button><button id="stop" disabled>■ Stop</button></div>
                 <p id="voice-status" class="voice-status" role="status">Voice on · Beacon reads each reply aloud.</p>
-                <p class="voice-disclosure">Voice may use an online service to read guide replies.</p>
+                <p class="voice-disclosure">Voice replies may use an online service. Speaking uses your browser’s speech
+                    recognition (Chrome sends the audio to Google).</p>
                 <div class="end-row"><span id="privacy">A live, guided product session</span><button id="end"
                         disabled>End session</button></div>
             </div>

@@ -33,3 +33,13 @@ def test_model_outage_uses_reviewed_keywords_only(monkeypatch):
     assert result.feature=='projects' and source=='keyword_fallback'
     with pytest.raises(httpx.HTTPError):asyncio.run(planner.plan('file my income tax',None))
     assert keyword_match('payroll for employees') is None
+
+@pytest.mark.parametrize('spoken,expected',[
+ ('लीड का स्टेटस कैसे बदलें','status'),('लीड में नोट कैसे ऐड करें','notes'),('मुझे व्हाट्सएप दिखाओ','whatsapp'),('नया लीड बनाओ','add_lead')])
+def test_hindi_speech_uses_reviewed_shortcuts(spoken,expected):
+    result,source=asyncio.run(planner.plan(spoken,None))
+    assert result.feature==expected and source=='reviewed_shortcut'
+
+def test_hindi_greeting_and_opt_out():
+    assert small_talk('नमस्ते।').startswith('Hello!')
+    assert planner.declined('मुझे संपर्क मत करो')

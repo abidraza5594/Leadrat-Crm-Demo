@@ -72,3 +72,12 @@ Verification:
 - End to end against a local **fake CRM fixture** (login form + left nav + routes; not the real CRM): hidden browser signed in automatically, saved the login, and the next session started signed in (1.9 s) with no credentials. A waiting session picked up a login saved mid-session in about 0.5 s. A wrong password stopped with a message and saved nothing. The popup streamed 188–239 frames per run with zero blank frames, and every neural reply played in order (browser speech used 0 times). With neural voice disabled, all replies fell back to browser speech without stalling.
 - **Real CRM (`doit.leadrat.info`):** the hidden browser loaded the login page in 2.3 s and found the username, password and Log In controls. No sign-in was attempted (no credentials in this run), so real-CRM login, lead walkthroughs and live frames after this change are **not yet verified**.
 - Local planner: first question after load took 19.7 s before the prompt warm-up; later questions took about 2.4 s. These are single samples, not a latency guarantee.
+
+## Talk mode and popup layout — 28 September 2026
+
+Reported: the text box was not visible in the popup; visitors should be able to both type and speak.
+
+- **Cause of the hidden text box:** the live CRM image took its height from its width, and the grid row grew to fit it, pushing the chat input below the popup at 125% zoom or on shorter windows. The row is now fixed to the popup height and the image is fitted inside it. Verified in a browser at 1473×700 (the reported window at 125% zoom), 1280×620 with walkthrough activity visible, and 1920×1000: the text box, 🎤, send and End session were inside the popup each time.
+- **Talk mode**, with a scripted stand-in for the browser's speech recognition (real microphone recognition cannot run in automated headless Chrome): two spoken questions were transcribed into the box, auto-sent and answered with voice. Listening restarted only after each spoken reply ended (0 starts while audio played), and talk mode paused after two silences.
+- **Real microphone speech recognition was not tested automatically;** it needs a person speaking in Chrome or Edge.
+- 45 pytest tests pass (5 new: Hindi Devanagari shortcuts, greeting and opt-out).

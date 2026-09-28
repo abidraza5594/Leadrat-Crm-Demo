@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const ui = Object.fromEntries(['start','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity','viewer-caption'].map(id=>[id,$(id)]));
+  const ui = Object.fromEntries(['start','mic','mic-lang','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity','viewer-caption'].map(id=>[id,$(id)]));
   const parentOrigin = new URLSearchParams(location.search).get('parent_origin') || location.origin;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   // Per-viewer convenience only; storage can be unavailable in private windows.
@@ -19,7 +19,7 @@
   function controls() {
     $('close').disabled = starting || ending;
     ui.start.hidden = !!session; ui.start.disabled = starting; setText(ui.start, starting ? 'Connecting…' : 'Start a session ↗');
-    ui.message.disabled = !ready(); ui.send.disabled = !ready() || !ui.message.value.trim();
+    ui.message.disabled = !ready(); ui.send.disabled = !ready() || !ui.message.value.trim(); ui.mic.disabled = !session || ending;
     ui.suggestions.hidden = !session; ui.suggestions.querySelectorAll('button').forEach(b=>b.disabled=!ready());
     ui.end.disabled = !session || ending; ui.stop.disabled = !session || stopPending || !state?.busy;
     ui.replay.disabled = !active() || !state?.messages?.some(m=>m.role==='assistant');
@@ -84,6 +84,7 @@
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
     if (next.status === 'login_required' && hasFrame) clearScreen();
     controls();
+    talk.resume();
   }
   async function poll(target) {
     if(!active() || target!==session || pollRunning) return;
@@ -136,7 +137,7 @@
   const voiceQueue = (() => {
     const player = new Audio(); player.preload = 'auto';
     let enabled = prefs.get('beacon.voice') !== 'off', unlocked = false, blocked = false;
-    let queue = [], spoken = new Set(), generation = 0, runId = 0, playing = false, stopCurrent = null, utterance = null;
+    let queue = [], spoken = new Set(), generation = 0, runId = 0, playing = false, stopCurrent = null, utterance = null, onIdle = null;
     const status = text => setText(ui['voice-status'], text);
     const idleText = () => enabled ? 'Voice on · Beacon reads each reply aloud.' : 'Voice off · Replies appear as text.';
     function silentWav() {
@@ -221,7 +222,7 @@
           if (result === 'blocked') { queue.unshift(item); blocked = true; status('Tap anywhere in this window to turn on sound.'); return; }
           if (result === 'failed') status('Voice is unavailable for this reply. You can read it above.');
         }
-      } finally { if (run === runId) { playing = false; if (!blocked && !queue.length) status(idleText()); } }
+      } finally { if (run === runId) { playing = false; if (!blocked && !queue.length) { status(idleText()); onIdle?.(); } } }
     }
     function cancel() {
       generation++; queue = []; playing = false; blocked = false;
@@ -242,7 +243,74 @@
       lookahead(); pump();
     }
     function reset() { cancel(); spoken = new Set(); }
-    return {offer, cancel, unlock, replay, reset, setEnabled, get enabled() { return enabled; }};
+    return {offer, cancel, unlock, replay, reset, setEnabled, get enabled() { return enabled; },
+      get speaking() { return playing || queue.length > 0; }, set onIdle(fn) { onIdle = fn; }};
+  })();
+
+  // ---- Speak instead of typing (browser speech recognition: Chrome/Edge). Talk mode listens again after
+  // each reply and waits while Beacon speaks, so it never transcribes its own voice. Typing always works too.
+  const talk = (() => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const languages = {'en-IN':'🗣 English','hi-IN':'🗣 हिन्दी'};
+    let lang = languages[prefs.get('beacon.micLang')] ? prefs.get('beacon.micLang') : 'en-IN';
+    let recognition = null, listening = false, on = false, silentTries = 0, sendOnStop = false, restart = null;
+    const placeholder = ui.message.getAttribute('placeholder');
+    const status = text => setText(ui['voice-status'], text);
+    function paint() {
+      ui.mic.hidden = !Recognition; ui['mic-lang'].hidden = !Recognition;
+      ui.mic.setAttribute('aria-pressed', String(on)); ui.mic.classList.toggle('listening', listening);
+      ui.mic.title = listening ? 'Listening… tap to send now' : on ? 'Talk mode on · tap to turn it off' : 'Talk instead of typing';
+      ui.message.placeholder = listening ? 'Listening… speak now' : on ? 'Talk mode on · I will listen after my reply' : placeholder;
+      setText(ui['mic-lang'], languages[lang]);
+    }
+    function listen() {
+      if (!Recognition || listening || !on || !ready() || voiceQueue.speaking) return;
+      voiceQueue.cancel();
+      const typed = ui.message.value.trim(); let heard = '';
+      const r = new Recognition(); recognition = r;
+      r.lang = lang; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+      r.onresult = e => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) heard += t; else interim += t; }
+        // Live transcript in the text box; anything already typed stays in front of it.
+        ui.message.value = [typed, heard, interim].map(x=>x.trim()).filter(Boolean).join(' '); controls();
+      };
+      r.onerror = e => {
+        if (e.error === 'no-speech') silentTries++;
+        else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { on = false; status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); }
+        else if (e.error === 'network') { on = false; status('Speech recognition needs an internet connection. You can still type.'); }
+        else if (e.error === 'audio-capture') { on = false; status('No microphone was found. You can still type.'); }
+      };
+      r.onend = () => {
+        if (recognition !== r) return;
+        recognition = null; listening = false;
+        const text = ui.message.value.trim(), shouldSend = heard.trim() && (on || sendOnStop);
+        sendOnStop = false;
+        if (shouldSend) { silentTries = 0; send(text); }
+        else if (on && silentTries >= 2) { on = false; status('Talk mode paused after silence. Tap 🎤 to speak again.'); }
+        else if (!on && !shouldSend) status(voiceQueue.enabled ? 'Voice on · Beacon reads each reply aloud.' : 'Voice off · Replies appear as text.');
+        paint(); resume();
+      };
+      try { r.start(); listening = true; status(lang === 'hi-IN' ? 'सुन रहा हूँ… अपना सवाल बोलिए।' : 'Listening… speak your question.'); }
+      catch { recognition = null; listening = false; }
+      paint();
+    }
+    function resume() { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, 400); }
+    function toggle() {
+      if (!Recognition) return;
+      voiceQueue.unlock();
+      if (listening) { on = false; sendOnStop = true; recognition.stop(); paint(); return; }
+      if (on) { on = false; clearTimeout(restart); restart = null; paint(); status('Talk mode off. Type, or tap 🎤 to speak.'); return; }
+      // Tapping the mic means "I want to talk now": stop Beacon's narration first.
+      on = true; silentTries = 0; voiceQueue.cancel(); paint();
+      if (!ready()) status('Talk mode on · I will listen when this step finishes.');
+      listen();
+    }
+    function stop() { on = false; clearTimeout(restart); restart = null; if (recognition) { const r = recognition; recognition = null; listening = false; try { r.abort(); } catch {} } paint(); }
+    function switchLanguage() { lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN'; prefs.set('beacon.micLang', lang); paint(); }
+    voiceQueue.onIdle = resume;
+    paint();
+    return {toggle, stop, resume, switchLanguage, supported: !!Recognition};
   })();
 
   async function start() {
@@ -265,7 +333,7 @@
     finally{sending=false;controls();}
   }
   async function endSession(remote=true) {
-    if(ending)return;const target=session;ending=true;clearTimeout(timer);voiceQueue.cancel();controls();
+    if(ending)return;const target=session;ending=true;clearTimeout(timer);talk.stop();voiceQueue.cancel();controls();
     if(remote && target){try{await request(endpoint('',target),{method:'DELETE'},target);}catch(e){error('Could not confirm that the session ended. '+e.message);ending=false;controls();poll(target);return;}}
     session=null;state=null;ending=false;voiceQueue.reset();rendered.clear();stepsKey='';clearScreen();ui.activity.hidden=true;setText(ui.status,'Session ended');ui['status-dot'].className='';setText(ui['screen-status'],'Waiting for a session');setText(ui['empty-description'],'Your session has ended. Start a new session to explore again.');notice('');ui.messages.replaceChildren();const p=document.createElement('p');p.className='welcome';p.textContent='Thanks for exploring. Start a new session whenever you’re ready.';ui.messages.append(p);controls();
   }
@@ -273,6 +341,7 @@
   ui.start.addEventListener('click',start);ui.end.addEventListener('click',()=>endSession());ui.stop.addEventListener('click',stop);
   $('composer').addEventListener('submit',e=>{e.preventDefault();send(ui.message.value);});ui.message.addEventListener('input',controls);ui.message.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send(ui.message.value);}});
   ui.suggestions.addEventListener('click',e=>{const b=e.target.closest('[data-prompt]');if(b)send(b.dataset.prompt);});
+  ui.mic.addEventListener('click',()=>talk.toggle());ui['mic-lang'].addEventListener('click',()=>talk.switchLanguage());
   ui.voice.addEventListener('click',()=>{const value=!voiceQueue.enabled;voiceQueue.setEnabled(value);if(value)voiceQueue.unlock();if(session)request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:value})}).catch(e=>error(e.message));});
   ui.replay.addEventListener('click',()=>{const messages=state?.messages||[];const last=[...messages].reverse().find(m=>m.role==='assistant');if(!last)return;voiceQueue.unlock();if(!voiceQueue.enabled){voiceQueue.setEnabled(true);if(session)request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:true})}).catch(()=>{});}voiceQueue.replay(last);});
   // Any interaction re-enables sound that the browser blocked.
@@ -288,7 +357,7 @@
       else if(!e.shiftKey&&(document.activeElement===last||document.activeElement===document.body)){e.preventDefault();first.focus();}
     }
   });
-  window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
+  window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.stop();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
   voiceQueue.setEnabled(voiceQueue.enabled);
   controls();
 })();

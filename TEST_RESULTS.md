@@ -81,3 +81,23 @@ Reported: the text box was not visible in the popup; visitors should be able to 
 - **Talk mode**, with a scripted stand-in for the browser's speech recognition (real microphone recognition cannot run in automated headless Chrome): two spoken questions were transcribed into the box, auto-sent and answered with voice. Listening restarted only after each spoken reply ended (0 starts while audio played), and talk mode paused after two silences.
 - **Real microphone speech recognition was not tested automatically;** it needs a person speaking in Chrome or Edge.
 - 45 pytest tests pass (5 new: Hindi Devanagari shortcuts, greeting and opt-out).
+
+## Continuous listening and interruption — 28 September 2026
+
+Requested: listen all the time; if the visitor says something while Beacon is speaking, stop at once and do the new request.
+
+Browser checks with a scripted speech-recognition stand-in driven step by step (the real microphone cannot run in automated headless Chrome):
+
+| Check | Result |
+|---|---|
+| Spoken question sent after a pause | Passed (sent 0.8 s after the final words, visible in chat at 1.3 s) |
+| Beacon's own sentence picked up by the mic | Ignored; voice kept playing |
+| Visitor speaks over Beacon ("which projects have units available", which shares a phrase with the reply) | Voice stopped within 300 ms of the interim words; question sent |
+| Visitor speaks while a demonstration runs | Running request cancelled; new request answered |
+| "stop" while Beacon speaks | Voice silenced; nothing sent |
+| Browser ends recognition three times | Restarted each time; still hears afterwards |
+| Mic turned off | No further restarts |
+
+Backend: 46 pytest tests pass, including an interrupting turn that cancels a running demonstration (409 without `interrupt`, 202 with it).
+
+Not verified: real microphone recognition quality, echo leakage from loud speakers, and the echo-cancelled track path (it needs a newer Chrome with a real microphone).

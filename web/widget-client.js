@@ -12,6 +12,9 @@
   const rendered = new Map();
   const active = () => !!session && !ending && !closed;
   const ready = () => active() && ['ready','active','login_required'].includes(state?.status) && !state?.busy && !sending && !stopPending;
+  // A new question may be sent while Beacon is working; it interrupts the running demonstration.
+  const canSend = () => active() && ['ready','active','login_required'].includes(state?.status) && !sending && !stopPending;
+  let voiceHold = -1;
   function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
   function show(el, text) { setText(el, text || ''); el.hidden = !text; }
   const error = text => show(ui.error, text);
@@ -19,8 +22,8 @@
   function controls() {
     $('close').disabled = starting || ending;
     ui.start.hidden = !!session; ui.start.disabled = starting; setText(ui.start, starting ? 'Connecting…' : 'Start a session ↗');
-    ui.message.disabled = !ready(); ui.send.disabled = !ready() || !ui.message.value.trim(); ui.mic.disabled = !session || ending;
-    ui.suggestions.hidden = !session; ui.suggestions.querySelectorAll('button').forEach(b=>b.disabled=!ready());
+    ui.message.disabled = !canSend(); ui.send.disabled = !canSend() || !ui.message.value.trim(); ui.mic.disabled = !session || ending;
+    ui.suggestions.hidden = !session; ui.suggestions.querySelectorAll('button').forEach(b=>b.disabled=!canSend());
     ui.end.disabled = !session || ending; ui.stop.disabled = !session || stopPending || !state?.busy;
     ui.replay.disabled = !active() || !state?.messages?.some(m=>m.role==='assistant');
   }
@@ -80,11 +83,17 @@
     if (next.last_error && next.last_error!==lastStateError) {lastStateError=next.last_error; error(typeof next.last_error==='string'?next.last_error:'The walkthrough needs attention. Try another question.');}
     const messages = Array.isArray(next.messages) ? next.messages : [];
     renderMessages(messages, !!next.busy);
-    for (const m of messages) if (m.role === 'assistant') voiceQueue.offer(m);
+    // Speak only the reply to the latest question; replies to an interrupted one are skipped.
+    const users = messages.filter(m=>m.role==='user').length;
+    if (voiceHold >= 0 && users > voiceHold) voiceHold = -1;
+    if (voiceHold < 0) {
+      const lastUser = messages.map(m=>m.role).lastIndexOf('user');
+      messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else voiceQueue.offer(m); } });
+    }
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
     if (next.status === 'login_required' && hasFrame) clearScreen();
     controls();
-    talk.resume();
+    talk.refresh();
   }
   async function poll(target) {
     if(!active() || target!==session || pollRunning) return;
@@ -138,6 +147,8 @@
     const player = new Audio(); player.preload = 'auto';
     let enabled = prefs.get('beacon.voice') !== 'off', unlocked = false, blocked = false;
     let queue = [], spoken = new Set(), generation = 0, runId = 0, playing = false, stopCurrent = null, utterance = null, onIdle = null;
+    let currentText = '', recent = [];
+    function remember() { if (currentText) recent.push({text: currentText, at: performance.now()}); currentText = ''; recent = recent.filter(r => performance.now() - r.at < 5000); }
     const status = text => setText(ui['voice-status'], text);
     const idleText = () => enabled ? 'Voice on · Beacon reads each reply aloud.' : 'Voice off · Replies appear as text.';
     function silentWav() {
@@ -215,17 +226,19 @@
           status('Preparing voice…');
           const blob = await fetchClip(item);
           if (gen !== generation) return;
+          currentText = item.text;
           let result = blob ? await playBlob(blob) : 'failed';
           if (gen !== generation || result === 'stopped') return;
           if (result === 'failed') result = await speakText(item.text);
           if (gen !== generation || result === 'stopped') return;
+          remember();
           if (result === 'blocked') { queue.unshift(item); blocked = true; status('Tap anywhere in this window to turn on sound.'); return; }
           if (result === 'failed') status('Voice is unavailable for this reply. You can read it above.');
         }
       } finally { if (run === runId) { playing = false; if (!blocked && !queue.length) { status(idleText()); onIdle?.(); } } }
     }
     function cancel() {
-      generation++; queue = []; playing = false; blocked = false;
+      generation++; queue = []; playing = false; blocked = false; remember();
       if (stopCurrent) stopCurrent();
       try { player.pause(); } catch {}
       try { window.speechSynthesis?.cancel(); } catch {}
@@ -244,73 +257,137 @@
     }
     function reset() { cancel(); spoken = new Set(); }
     return {offer, cancel, unlock, replay, reset, setEnabled, get enabled() { return enabled; },
-      get speaking() { return playing || queue.length > 0; }, set onIdle(fn) { onIdle = fn; }};
+      get speaking() { return playing || queue.length > 0; }, set onIdle(fn) { onIdle = fn; },
+      skip(message) { spoken.add(message.id); },
+      // Text Beacon is saying or said moments ago; recognition results lag the audio by a second or two.
+      recentSpeech() { const now = performance.now(); return [currentText, ...recent.filter(r => now - r.at < 3500).map(r => r.text)].filter(Boolean).join(' '); }};
   })();
 
-  // ---- Speak instead of typing (browser speech recognition: Chrome/Edge). Talk mode listens again after
-  // each reply and waits while Beacon speaks, so it never transcribes its own voice. Typing always works too.
+  // ---- Speak instead of typing (browser speech recognition: Chrome/Edge). Talk mode listens all the time,
+  // including while Beacon speaks or works: speaking over Beacon stops it at once and runs the new request.
+  // Beacon's own voice is kept out by an echo-cancelled microphone track where the browser accepts one,
+  // and by ignoring transcripts that only repeat what Beacon just said. Typing always works too.
   const talk = (() => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     const languages = {'en-IN':'🗣 English','hi-IN':'🗣 हिन्दी'};
+    const STOP_WORDS = /^(stop|stop it|please stop|stop please|wait|ruko|ruk jao|rukiye|bas|bas karo|chup|रुको|रुक जाओ|रुकिए|बस|बस करो|चुप)$/i;
     let lang = languages[prefs.get('beacon.micLang')] ? prefs.get('beacon.micLang') : 'en-IN';
-    let recognition = null, listening = false, on = false, silentTries = 0, sendOnStop = false, restart = null;
+    // Newer recognition (with on-device support) also accepts a MediaStreamTrack; older ones use the default mic.
+    let useTrack = typeof Recognition?.available === 'function';
+    let recognition = null, listening = false, on = false, restart = null, flushTimer = null;
+    let heard = '', typed = null, track = null, quickEnds = 0, lastStart = 0;
     const placeholder = ui.message.getAttribute('placeholder');
     const status = text => setText(ui['voice-status'], text);
+    const listeningText = () => lang === 'hi-IN' ? '🎤 सुन रहा हूँ… कभी भी बोलिए, मेरे बोलते समय भी।' : '🎤 Listening… speak any time, even while I am talking.';
+    const words = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+    const pairs = ws => ws.slice(1).map((w, i) => ws[i] + ' ' + w);
+    function currentReply() {
+      const messages = state?.messages || [], lastUser = messages.map(m=>m.role).lastIndexOf('user');
+      return messages.slice(lastUser + 1).filter(m=>m.role==='assistant').map(m=>m.text).join(' ');
+    }
+    // Echo repeats Beacon's phrases in order, so compare word pairs, not single words: a real question
+    // such as "how to change status" shares words with a reply but rarely its word sequence.
+    function isEcho(text) {
+      const recent = voiceQueue.recentSpeech(); if (!recent) return false;
+      const said = words(recent + ' ' + currentReply()), got = words(text);
+      if (!got.length) return true;
+      if (got.length === 1) return said.includes(got[0]) && !STOP_WORDS.test(got[0]);
+      const known = new Set(pairs(said)), heardPairs = pairs(got);
+      return heardPairs.filter(p => known.has(p)).length / heardPairs.length > 0.5;
+    }
     function paint() {
       ui.mic.hidden = !Recognition; ui['mic-lang'].hidden = !Recognition;
-      ui.mic.setAttribute('aria-pressed', String(on)); ui.mic.classList.toggle('listening', listening);
-      ui.mic.title = listening ? 'Listening… tap to send now' : on ? 'Talk mode on · tap to turn it off' : 'Talk instead of typing';
-      ui.message.placeholder = listening ? 'Listening… speak now' : on ? 'Talk mode on · I will listen after my reply' : placeholder;
+      ui.mic.setAttribute('aria-pressed', String(on)); ui.mic.classList.toggle('listening', on && listening);
+      ui.mic.title = on ? 'Listening all the time · tap to turn off' : 'Talk instead of typing';
+      ui.message.placeholder = on ? (state?.busy ? 'Listening… speak to change the request' : 'Listening… speak any time')
+        : state?.busy ? 'Type to change the request…' : placeholder;
       setText(ui['mic-lang'], languages[lang]);
     }
-    function listen() {
-      if (!Recognition || listening || !on || !ready() || voiceQueue.speaking) return;
-      voiceQueue.cancel();
-      const typed = ui.message.value.trim(); let heard = '';
+    async function micTrack() {
+      if (!useTrack) return null;
+      if (track?.readyState === 'live') return track;
+      try { track = (await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})).getAudioTracks()[0]; }
+      catch (e) { track = null; if (e?.name === 'NotAllowedError') throw e; }
+      return track;
+    }
+    function releaseMic() { try { track?.stop(); } catch {} track = null; }
+    function flush() {
+      clearTimeout(flushTimer); flushTimer = null;
+      const text = [typed, heard].map(x => (x || '').trim()).filter(Boolean).join(' ');
+      heard = ''; typed = null;
+      if (!text) return;
+      if (STOP_WORDS.test(text.replace(/[.!?।,]+/g, '').trim())) { ui.message.value = ''; controls(); stop(); return; }
+      send(text);
+    }
+    function onResult(e) {
+      let finals = '', interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finals += ' ' + t; else interim += ' ' + t; }
+      if (finals.trim() && !isEcho(finals)) heard += ' ' + finals.trim();
+      const live = interim.trim() && !isEcho(interim) ? interim.trim() : '';
+      const current = (heard + ' ' + live).trim();
+      if (!current) return;
+      if (typed === null) typed = ui.message.value.trim();
+      // The visitor is speaking: cut Beacon off at once (barge-in).
+      if (voiceQueue.speaking && (words(current).length >= 2 || heard.trim())) voiceQueue.cancel();
+      ui.message.value = [typed, current].filter(Boolean).join(' '); controls();
+      clearTimeout(flushTimer);
+      // Send after a short pause, so a question spoken with a breath in the middle is not split in two.
+      if (heard.trim()) flushTimer = setTimeout(flush, live ? 1400 : 800);
+    }
+    function schedule(ms) { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, ms); }
+    async function listen() {
+      if (!Recognition || listening || !on || !active()) return;
+      let input = null;
+      try { input = await micTrack(); }
+      catch { on = false; paint(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); return; }
+      if (!on || listening || !active()) return;
       const r = new Recognition(); recognition = r;
-      r.lang = lang; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
-      r.onresult = e => {
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) heard += t; else interim += t; }
-        // Live transcript in the text box; anything already typed stays in front of it.
-        ui.message.value = [typed, heard, interim].map(x=>x.trim()).filter(Boolean).join(' '); controls();
-      };
+      r.lang = lang; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+      r.onresult = onResult;
       r.onerror = e => {
-        if (e.error === 'no-speech') silentTries++;
-        else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { on = false; status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); }
-        else if (e.error === 'network') { on = false; status('Speech recognition needs an internet connection. You can still type.'); }
-        else if (e.error === 'audio-capture') { on = false; status('No microphone was found. You can still type.'); }
+        if (['not-allowed','service-not-allowed'].includes(e.error)) { on = false; releaseMic(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); }
+        else if (e.error === 'audio-capture') { if (input) useTrack = false; else { on = false; status('No microphone was found. You can still type.'); } }
+        else if (e.error === 'network') status('Speech recognition lost its connection; retrying…');
+        else if (input && !['no-speech','aborted'].includes(e.error)) useTrack = false;
       };
       r.onend = () => {
         if (recognition !== r) return;
         recognition = null; listening = false;
-        const text = ui.message.value.trim(), shouldSend = heard.trim() && (on || sendOnStop);
-        sendOnStop = false;
-        if (shouldSend) { silentTries = 0; send(text); }
-        else if (on && silentTries >= 2) { on = false; status('Talk mode paused after silence. Tap 🎤 to speak again.'); }
-        else if (!on && !shouldSend) status(voiceQueue.enabled ? 'Voice on · Beacon reads each reply aloud.' : 'Voice off · Replies appear as text.');
-        paint(); resume();
+        if (heard.trim()) flush();
+        // Chrome ends continuous recognition periodically; restart, backing off if it keeps ending at once.
+        quickEnds = performance.now() - lastStart < 2000 ? quickEnds + 1 : 0;
+        paint();
+        if (on) schedule(quickEnds > 3 ? 3000 : 250); else releaseMic();
       };
-      try { r.start(); listening = true; status(lang === 'hi-IN' ? 'सुन रहा हूँ… अपना सवाल बोलिए।' : 'Listening… speak your question.'); }
-      catch { recognition = null; listening = false; }
+      lastStart = performance.now();
+      try {
+        if (input) { try { r.start(input); } catch { useTrack = false; r.start(); } } else r.start();
+        listening = true;
+      } catch { recognition = null; listening = false; schedule(1000); }
       paint();
     }
-    function resume() { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, 400); }
+    function abortRecognition() { if (recognition) { const r = recognition; recognition = null; listening = false; try { r.abort(); } catch {} } }
     function toggle() {
       if (!Recognition) return;
       voiceQueue.unlock();
-      if (listening) { on = false; sendOnStop = true; recognition.stop(); paint(); return; }
-      if (on) { on = false; clearTimeout(restart); restart = null; paint(); status('Talk mode off. Type, or tap 🎤 to speak.'); return; }
+      if (on) {
+        on = false; clearTimeout(restart); restart = null;
+        if (heard.trim()) flush(); else { heard = ''; typed = null; }
+        abortRecognition(); releaseMic(); paint(); status('Talk mode off. Type, or tap 🎤 to speak.'); return;
+      }
       // Tapping the mic means "I want to talk now": stop Beacon's narration first.
-      on = true; silentTries = 0; voiceQueue.cancel(); paint();
-      if (!ready()) status('Talk mode on · I will listen when this step finishes.');
+      on = true; quickEnds = 0; voiceQueue.cancel(); paint(); status(listeningText());
       listen();
     }
-    function stop() { on = false; clearTimeout(restart); restart = null; if (recognition) { const r = recognition; recognition = null; listening = false; try { r.abort(); } catch {} } paint(); }
-    function switchLanguage() { lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN'; prefs.set('beacon.micLang', lang); paint(); }
-    voiceQueue.onIdle = resume;
+    function shutdown() { on = false; clearTimeout(restart); restart = null; clearTimeout(flushTimer); heard = ''; typed = null; abortRecognition(); releaseMic(); paint(); }
+    function switchLanguage() {
+      lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN'; prefs.set('beacon.micLang', lang); paint();
+      // Restart so the new language applies straight away.
+      if (on) { abortRecognition(); status(listeningText()); schedule(150); }
+    }
+    voiceQueue.onIdle = () => { if (on) status(listeningText()); };
     paint();
-    return {toggle, stop, resume, switchLanguage, supported: !!Recognition};
+    return {toggle, shutdown, switchLanguage, refresh() { paint(); schedule(250); }, get on() { return on; }};
   })();
 
   async function start() {
@@ -327,13 +404,27 @@
     finally{starting=false;controls();}
   }
   async function send(message) {
-    if(!message.trim() || !ready())return;const target=session;voiceQueue.unlock();voiceQueue.cancel();sending=true;error('');lastStateError='';controls();
-    try {await request(endpoint('/turn',target),{method:'POST',body:JSON.stringify({message:message.trim()})},target);if(target===session){ui.message.value='';render({...state,busy:true});poll(target);}}
-    catch(e){if(target===session)error(e.message);}
+    if(!message.trim() || !canSend())return;
+    const target=session,text=message.trim(),interrupt=!!state?.busy;
+    voiceQueue.unlock();voiceQueue.cancel();voiceHold=(state?.messages||[]).filter(m=>m.role==='user').length;sending=true;error('');lastStateError='';controls();
+    const post=async body=>{
+      try{return await request(endpoint('/turn',target),{method:'POST',body:JSON.stringify(body)},target);}
+      catch(e){if(e.status!==429)throw e;await sleep(600);return request(endpoint('/turn',target),{method:'POST',body:JSON.stringify(body)},target);}
+    };
+    try {
+      try{await post(interrupt?{message:text,interrupt:true}:{message:text});}
+      catch(e){
+        // A demo that started meanwhile, or an older backend without interrupt: stop it, then ask.
+        if(!(e.status===409||(interrupt&&e.status===422)))throw e;
+        await request(endpoint('/stop',target),{method:'POST'},target);await post({message:text});
+      }
+      if(target===session){ui.message.value='';render({...state,busy:true});poll(target);}
+    }
+    catch(e){voiceHold=-1;if(target===session)error(e.message);}
     finally{sending=false;controls();}
   }
   async function endSession(remote=true) {
-    if(ending)return;const target=session;ending=true;clearTimeout(timer);talk.stop();voiceQueue.cancel();controls();
+    if(ending)return;const target=session;ending=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();controls();
     if(remote && target){try{await request(endpoint('',target),{method:'DELETE'},target);}catch(e){error('Could not confirm that the session ended. '+e.message);ending=false;controls();poll(target);return;}}
     session=null;state=null;ending=false;voiceQueue.reset();rendered.clear();stepsKey='';clearScreen();ui.activity.hidden=true;setText(ui.status,'Session ended');ui['status-dot'].className='';setText(ui['screen-status'],'Waiting for a session');setText(ui['empty-description'],'Your session has ended. Start a new session to explore again.');notice('');ui.messages.replaceChildren();const p=document.createElement('p');p.className='welcome';p.textContent='Thanks for exploring. Start a new session whenever you’re ready.';ui.messages.append(p);controls();
   }
@@ -357,7 +448,7 @@
       else if(!e.shiftKey&&(document.activeElement===last||document.activeElement===document.body)){e.preventDefault();first.focus();}
     }
   });
-  window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.stop();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
+  window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
   voiceQueue.setEnabled(voiceQueue.enabled);
   controls();
 })();

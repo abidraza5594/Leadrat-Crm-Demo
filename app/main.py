@@ -122,6 +122,8 @@ class Create(BaseModel):
 class Turn(BaseModel):
     model_config=ConfigDict(extra='forbid')
     message:str=Field(min_length=1,max_length=2000)
+    # The visitor spoke or typed over a running demonstration: stop it and do the new request.
+    interrupt:bool=False
 
 def owned(id,request,touch=False):
     s=sessions.get(id)
@@ -281,10 +283,14 @@ async def execute(s,message):
 @app.post('/api/sessions/{id}/turn',status_code=202)
 async def turn(id:str,body:Turn,request:Request):
     s=owned(id,request,touch=True)
-    if s.task and not s.task.done():raise HTTPException(409,'A demonstration is running. Stop it first to change the request.')
+    if s.task and not s.task.done() and not body.interrupt:raise HTTPException(409,'A demonstration is running. Stop it first to change the request.')
     if time.monotonic()-s.last_turn<0.5:raise HTTPException(429,'Please wait briefly before another request')
     message=body.message.strip()
     if not message:raise HTTPException(422,'Enter a question')
+    if s.task and not s.task.done():
+        # Cancellation marks running steps as stopped; nothing half-done is claimed as verified.
+        s.task.cancel()
+        with suppress(asyncio.CancelledError):await s.task
     s.last_turn=time.monotonic();s.last_error=None;s.steps=[]
     s.messages.append({'id':secrets.token_urlsafe(12),'role':'user','text':message})
     s.task=asyncio.create_task(execute(s,message))

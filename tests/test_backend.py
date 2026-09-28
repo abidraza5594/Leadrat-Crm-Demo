@@ -147,3 +147,19 @@ def test_expired_login_signs_in_again(monkeypatch):
         await s.relogin
         assert s.status=='ready' and 'again' in s.messages[-1]['text']
     asyncio.run(run())
+
+def test_new_question_interrupts_running_demo(client):
+    s,h=start(client);path='/api/sessions/'+s['id']
+    session=main.sessions[s['id']]
+    async def slow(feature):await asyncio.sleep(300)
+    session.worker.open_module=slow
+    assert client.post(path+'/turn',json={'message':'show leads'},headers=h).status_code==202
+    assert client.get(path,headers=h).json()['busy']
+    session.last_turn-=1
+    assert client.post(path+'/turn',json={'message':'show tasks'},headers=h).status_code==409
+    r=client.post(path+'/turn',json={'message':'hi','interrupt':True},headers=h)
+    assert r.status_code==202
+    snap=client.get(path,headers=h).json()
+    assert [m['text'] for m in snap['messages'] if m['role']=='user']==['show leads','hi']
+    assert snap['messages'][-1]['text'].startswith('Hello!')
+    client.delete(path,headers=h)

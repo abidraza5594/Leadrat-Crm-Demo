@@ -11,12 +11,14 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from . import config
 from .browser import BrowserWorker, DemoError, device_location, has_login_credentials
-from .planner import FEATURES, plan, declined, small_talk, warm_up, USAGE
+from .planner import FEATURES, plan, declined, small_talk, warm_up, write_request, USAGE
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
 from . import docs
 
+READ_ONLY=("I can't do that here. This demo is read-only: I never delete, edit, save, send, upload, export, assign or call anything. "
+    "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
 QUESTION=re.compile(r"\b(how|why|what|where|when|which|who|can i|could i|does|do i|is it|are there|kya|kaise|kyu|kyun|kaha|kahan|batao|bataiye|explain)\b|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
@@ -234,6 +236,11 @@ async def execute(s,message):
         if declined(message):
             s.opted_out=True
             s.say('Understood. I will not request contact details or send a follow-up or handoff. Thank you for exploring Leadrat.')
+            return
+        if write_request(message):
+            # Enforced before planning: no model output or browser action can turn this into a write.
+            s.steps.append({'title':'Requested CRM change','status':'blocked','detail':'Read-only demo: delete, edit, save, send, upload, export, assign and call are not permitted.'})
+            s.say(READ_ONLY)
             return
         reply=small_talk(message)
         if reply:

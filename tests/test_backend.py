@@ -163,3 +163,15 @@ def test_new_question_interrupts_running_demo(client):
     assert [m['text'] for m in snap['messages'] if m['role']=='user']==['show leads','hi']
     assert snap['messages'][-1]['text'].startswith('Hello!')
     client.delete(path,headers=h)
+
+def test_destructive_commands_are_blocked_before_any_browser_action():
+    async def run():
+        for command in ['delete this lead','export all leads to excel','send whatsapp to every lead','lead delete kar do','show leads and delete them']:
+            s=main.Session(worker=Worker())
+            await main.execute(s,command)
+            assert s.worker.calls==[] and s.steps[-1]['status']=='blocked'
+            assert s.messages[-1]['text']==main.READ_ONLY
+        s=main.Session(worker=Worker())
+        await main.execute(s,'show leads')
+        assert s.worker.calls==['leads']
+    asyncio.run(run())

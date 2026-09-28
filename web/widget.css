@@ -65,3 +65,4 @@ form { gap: 6px; }
 #mic.listening::after { content: ''; position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: #d4452b; animation: pulse 1s infinite; }
 #mic[hidden] { display: none !important; }
 .toolbar { flex-wrap: wrap; }
+#steps li.step-blocked span { color: #a4482f; font-weight: 600; }

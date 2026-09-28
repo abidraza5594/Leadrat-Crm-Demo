@@ -32,7 +32,8 @@ REFUSAL = ("I don't know that from the Leadrat documentation I have, so I won't 
 SYNONYMS = {'see':['visible','visibility'],'find':['visible','search'],'show':['visible'],'missing':['visible'],'cant':['missing'],
     'create':['creation'],'add':['creation','create'],'new':['creation','create'],'upload':['import'],'bulk':['import'],
     'owner':['assignment','reassignment'],'assign':['assignment'],'change':['edit','update'],'login':['log'],'fail':['rejected','fails'],
-    'failed':['rejected'],'inventory':['property','unit'],'staff':['user'],'employee':['user'],'permission':['access','role'],
+    'failed':['rejected'],'inventory':['property','unit'],'staff':['user'],'employee':['user'],'permission':['access','role'],'outdated':['stale','freshness'],'old':['stale'],'database':['data','import'],
+    'move':['team','hierarchy','assignment'],'deactivate':['deactivation','inactive'],
     'badle':['change','reassignment'],'badal':['change'],'badalna':['change'],'dikhao':['visible'],'dikhe':['visible'],'banaye':['creation','create'],'banao':['creation','create']}
 
 def stem(w):

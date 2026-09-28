@@ -63,3 +63,16 @@ def test_unknown_request_uses_handbook_not_invention(monkeypatch):
     s=main.Session()
     asyncio.run(main.execute(s,'What is the refund policy?'))
     assert s.messages[-1]['text']==docs.REFUSAL and not s.steps
+
+def test_handbook_answer_survives_a_failed_demo(monkeypatch):
+    from app import main
+    async def model(message,previous):return Plan(feature='dashboard',demo=True),'ollama'
+    monkeypatch.setattr(planner,'classify',model)
+    async def handbook(question):return {'grounded':True,'text':'Handbook answer. (Source: Dashboard)','sources':[1],'mode':'llm'}
+    monkeypatch.setattr(main.docs,'answer',handbook)
+    class Worker:
+        async def open_module(self,f):raise main.DemoError('Not signed in.')
+    s=main.Session(worker=Worker())
+    asyncio.run(main.execute(s,'mujhe batao dashboard ka number alag kyun hai'))
+    texts=[m['text'] for m in s.messages]
+    assert texts[0].startswith('Handbook answer') and not any(t.startswith('Here is the procedure') for t in texts)

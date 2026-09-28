@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright
 from . import config
 from .device_location import cached_windows_location, known_location
 from .popups import handle_popups, PopupBlocked
+from . import guide
 
 class DemoError(Exception):pass
 
@@ -230,7 +231,7 @@ class BrowserWorker:
                     if await element.is_visible() and await element.get_attribute('aria-disabled')!='true':target=element;break
                 if target is not None:break
             if target is None:raise DemoError(f'{label} is not visible or permitted in this sandbox account.')
-            await target.click()
+            await guide.click(target,f'Click {label} in the left menu')
             await page.wait_for_url(lambda url:urlsplit(str(url)).path.startswith('/'+module),timeout=12000)
             if await page.get_by_text(re.compile('access denied|not authorized',re.I)).count():raise DemoError('The CRM denied access to this screen.')
             if not await self.signed_in():raise DemoError('The CRM session expired. The demo stopped.')
@@ -257,14 +258,14 @@ class BrowserWorker:
                 try:await with_timeout.wait_for(state='visible',timeout=8000)
                 except Exception:raise DemoError('The bulk-upload menu is not available in this account.')
                 if await dropdown.count()==1 and await dropdown.is_visible():
-                    await dropdown.click()
+                    await guide.click(dropdown,'Open the menu next to Add Lead')
                     candidates=page.get_by_role('option',name=re.compile(r'bulk\s+upload',re.I))
             # Angular may expose the route before permissions and controls finish rendering.
             try:await candidates.first.wait_for(state='visible',timeout=10000)
             except Exception:raise DemoError('The expected entry control did not become visible. No alternate action was attempted.')
             visible=[candidates.nth(i) for i in range(await candidates.count()) if await candidates.nth(i).is_visible()]
             if len(visible)!=1:raise DemoError('The expected entry control is not uniquely visible. No alternate action was attempted.')
-            await visible[0].click()
+            await guide.click(visible[0],'Click Add Lead' if feature['id']=='add_lead' else 'Choose Bulk Upload')
             if feature['id']=='add_lead':
                 await page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"]').first.wait_for(state='visible',timeout=10000)
                 fields=page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"],input[formcontrolname="email"]')
@@ -273,8 +274,8 @@ class BrowserWorker:
                     field=fields.nth(i)
                     if await field.is_visible():
                         # UI highlighting only; no form values read or written.
-                        await field.scroll_into_view_if_needed()
                         labels.append({'name':'Customer name','firstName':'Customer name','email':'Email'}.get(await field.get_attribute('formcontrolname'),'Contact field'))
+                        await guide.point(field,'This is the '+labels[-1]+' field')
                 return labels
             await page.wait_for_url('**/leads/bulk-upload*',timeout=10000)
             return []

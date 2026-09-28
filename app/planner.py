@@ -159,6 +159,23 @@ async def classify(message: str, previous: str | None) -> tuple[Plan,str]:
         result.raise_for_status()
         return Plan.model_validate_json(result.json()['message']['content']),'ollama'
 
+WRITE_VERBS=(r"delete|remove|erase|archive|restore|export|download|send|forward|share|save|submit|update|edit|modify|overwrite|"
+    r"upload|import|assign|reassign|transfer|merge|approve|publish|sync|call|dial|mark|deactivate|"
+    r"bhej\w*|mita\w*|hata\w*|save\s+kar\w*|delete\s+kar\w*|update\s+kar\w*|badal\s+do|kar\s+do|kardo")
+QUESTION_WORDS=re.compile(r"\b(how|why|what|where|when|which|can i|could i|is it possible|kaise|kya|kyu|kyun|kaha|kahan|batao|explain|show me how)\b|\?\s*$",re.I)
+
+def write_request(message: str) -> bool:
+    """A command to change, send or extract CRM data (not a question about how it works).
+
+    The demo is read-only: such commands are refused before any browser action, whatever the planner says.
+    """
+    text=romanize(message).lower()
+    verb=r"\b("+WRITE_VERBS+r")\b"
+    if not re.search(verb,text):return False
+    # "show export" / "open the edit form" asks to see a screen; "show leads and delete them" is still a command.
+    if re.match(r"\s*(please\s+)?(show|open|demo|dikhao|dikha|kholo)\b",text) and not re.search(r"\b(and|then|aur|phir)\b.*"+verb,text):return False
+    return not QUESTION_WORDS.search(text)
+
 def declined(message: str) -> bool:
     message=romanize(message)
     return bool(re.search(r"\b(?:do not|don't|dont|never)\s+(?:contact|call|email|follow[ -]?up)|\bno\s+(?:follow[ -]?up|further contact)|\bstop contacting|\bnot interested\b|\bcontact mat",message,re.I))

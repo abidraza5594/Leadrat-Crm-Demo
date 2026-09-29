@@ -1,0 +1,63 @@
+{
+ "examples": 124,
+ "schema_valid_pct": 96.0,
+ "arithmetic_mismatch": 102,
+ "field_accuracy_pct": {
+  "seniority": 84.7,
+  "organisation.type": 73.4,
+  "organisation.agents": 88.7,
+  "process": 75.8,
+  "influence": 72.6,
+  "next_step": 83.9,
+  "consent": 80.6,
+  "monthly_leads.min": 83.1,
+  "monthly_leads.max": 81.5,
+  "current_tooling": 81.0,
+  "lead_sources": 85.3,
+  "geography.cities": 91.7,
+  "geography.countries": 57.0,
+  "pain_points.count": 58.1
+ },
+ "macro_f1_categorical": {
+  "seniority": 0.649,
+  "organisation.type": 0.527,
+  "process": 0.617,
+  "influence": 0.388,
+  "next_step": 0.654,
+  "route": 0.474
+ },
+ "macro_f1": 0.551,
+ "score_mae": 4.44,
+ "score_mae_n": 9,
+ "routing_accuracy_pct": 74.2,
+ "routing_accuracy_rescored_pct": 83.1,
+ "routing_by_class": {
+  "sales_handoff": {
+   "n": 15,
+   "correct": 10
+  },
+  "nurture": {
+   "n": 19,
+   "correct": 0
+  },
+  "graceful_close": {
+   "n": 9,
+   "correct": 9
+  },
+  "human_review": {
+   "n": 81,
+   "correct": 73
+  }
+ },
+ "unsafe_handoffs": 3,
+ "latency_ms": {
+  "p50": 25265,
+  "p95": 30248
+ },
+ "cost_per_1000_usd": 0.0,
+ "system": "C",
+ "backend": "hf",
+ "eval_file": "slm/data/dev.jsonl",
+ "model": "Qwen/Qwen2.5-1.5B-Instruct",
+ "adapter": "slm/runs/kaggle/adapter"
+}

@@ -20,6 +20,11 @@ if not os.path.exists('beacon'):
 os.chdir('beacon'); sys.path.insert(0, os.getcwd())
 subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'transformers', 'peft', 'bitsandbytes', 'accelerate', 'pydantic'], check=True)
 subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', '-q', 'torchao'], check=False)  # Colab's preinstalled torchao is too old for peft
+def sh(args):
+    # run a command and stream its output into the cell so progress stays visible
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env={**os.environ, 'PYTHONUNBUFFERED': '1'})
+    for line in proc.stdout: print(line, end='', flush=True)
+    if proc.wait(): raise RuntimeError(f'failed ({proc.returncode}): ' + ' '.join(args))
 print(subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv'], capture_output=True, text=True).stdout)"""),
 ('md', "## 1. Raw data → dataset (teacher scripts reproduce the raw batches; build.py validates, scores, splits)"),
 ('code', """import glob
@@ -29,7 +34,7 @@ print(subprocess.run([sys.executable, 'slm/build.py'], capture_output=True, text
 stats = json.load(open('slm/data/stats.json')); print(stats['split_sizes'], stats['sha256'])"""),
 ('md', "## 2. QLoRA fine-tune (NF4, rank 16, alpha 32, batch 1 × grad-accum 16; loss on the JSON answer only)"),
 ('code', """import torch
-subprocess.run([sys.executable, 'slm/train.py', '--out', 'slm/runs/colab', '--epochs', '2'], check=True)
+sh([sys.executable, 'slm/train.py', '--out', 'slm/runs/colab', '--epochs', '2'])
 meta = json.load(open('slm/runs/colab/run_metadata.json'))
 print({k: meta[k] for k in ['train_seconds', 'total_seconds', 'peak_vram_gib', 'gpu']})
 subprocess.run(['zip', '-qr', 'adapter_backup.zip', 'slm/runs/colab/adapter', 'slm/runs/colab/run_metadata.json'], check=True)
@@ -38,7 +43,7 @@ files.download('adapter_backup.zip')  # saved immediately so a disconnect during
 ('code', """EVAL = 'slm/eval/eval_set.jsonl' if os.path.exists('slm/eval/eval_set.jsonl') else 'slm/data/dev.jsonl'
 print('evaluating on', EVAL, '(dev.jsonl = teacher labels: development numbers only)' if 'dev' in EVAL else '')
 for system, extra in [('B', []), ('C', ['--adapter', 'slm/runs/colab/adapter'])]:
-    subprocess.run([sys.executable, 'slm/evaluate.py', 'run', '--system', system, '--backend', 'hf', '--eval', EVAL, '--gpu-hourly', '0'] + extra, check=True)
+    sh([sys.executable, 'slm/evaluate.py', 'run', '--system', system, '--backend', 'hf', '--eval', EVAL, '--gpu-hourly', '0'] + extra)
 print(subprocess.run([sys.executable, 'slm/evaluate.py', 'table'], capture_output=True, text=True).stdout)"""),
 ('md', "## 4. Download the adapter, results and run metadata"),
 ('code', """meta['notebook_seconds'] = round(time.time() - NOTEBOOK_STARTED); meta['eval_file'] = EVAL

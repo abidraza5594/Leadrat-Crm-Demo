@@ -155,7 +155,7 @@ def run(args):
         print(f"{args.system} {i}/{len(rows)} {row['id']} {reason or 'ok'} {ms}ms", flush=True)
     (RESULTS / f'{args.system}.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in out_rows), 'utf-8')
     m = metrics(out_rows, args.price_in, args.price_out, args.gpu_hourly)
-    m.update(system=args.system, backend=args.backend, eval_file=str(args.eval), model=args.model or args.base, adapter=args.adapter)
+    m.update(system=args.system, backend=args.backend, eval_file=str(args.eval), model=args.model or (os.getenv('OPENAI_MODEL', 'gpt-6-luna') if args.backend == 'openai' else args.base), adapter=args.adapter)
     (RESULTS / f'{args.system}.json').write_text(json.dumps(m, indent=1), 'utf-8')
     print(json.dumps(m, indent=1))
 

@@ -1,0 +1,64 @@
+{
+ "examples": 124,
+ "schema_valid_pct": 100.0,
+ "arithmetic_mismatch": 32,
+ "field_accuracy_pct": {
+  "seniority": 87.1,
+  "organisation.type": 86.3,
+  "organisation.agents": 96.8,
+  "process": 93.5,
+  "influence": 92.7,
+  "next_step": 93.5,
+  "consent": 98.4,
+  "monthly_leads.min": 98.4,
+  "monthly_leads.max": 97.6,
+  "current_tooling": 90.2,
+  "lead_sources": 92.6,
+  "geography.cities": 95.2,
+  "geography.countries": 59.3,
+  "pain_points.count": 90.3
+ },
+ "macro_f1_categorical": {
+  "seniority": 0.829,
+  "organisation.type": 0.641,
+  "process": 0.88,
+  "influence": 0.901,
+  "next_step": 0.924,
+  "route": 0.878
+ },
+ "macro_f1": 0.842,
+ "score_mae": 0.76,
+ "score_mae_n": 33,
+ "routing_accuracy_pct": 90.3,
+ "routing_accuracy_rescored_pct": 91.9,
+ "routing_by_class": {
+  "sales_handoff": {
+   "n": 15,
+   "correct": 14
+  },
+  "nurture": {
+   "n": 19,
+   "correct": 15
+  },
+  "graceful_close": {
+   "n": 9,
+   "correct": 9
+  },
+  "human_review": {
+   "n": 81,
+   "correct": 74
+  }
+ },
+ "unsafe_handoffs": 6,
+ "latency_ms": {
+  "p50": 5494,
+  "p95": 7524
+ },
+ "cost_per_1000_usd": 0.0,
+ "system": "A",
+ "backend": "openai",
+ "eval_file": "slm/data/dev.jsonl",
+ "model": "gpt-6-luna",
+ "adapter": null,
+ "output_schema": "json_schema (strict=False) from Qualification"
+}

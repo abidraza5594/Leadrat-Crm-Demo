@@ -31,7 +31,9 @@ stats = json.load(open('slm/data/stats.json')); print(stats['split_sizes'], stat
 ('code', """import torch
 subprocess.run([sys.executable, 'slm/train.py', '--out', 'slm/runs/colab', '--epochs', '2'], check=True)
 meta = json.load(open('slm/runs/colab/run_metadata.json'))
-print({k: meta[k] for k in ['train_seconds', 'total_seconds', 'peak_vram_gib', 'gpu']})"""),
+print({k: meta[k] for k in ['train_seconds', 'total_seconds', 'peak_vram_gib', 'gpu']})
+subprocess.run(['zip', '-qr', 'adapter_backup.zip', 'slm/runs/colab/adapter', 'slm/runs/colab/run_metadata.json'], check=True)
+files.download('adapter_backup.zip')  # saved immediately so a disconnect during evaluation does not lose the training run"""),
 ('md', "## 3. Evaluate B (few-shot base) and C (fine-tuned) on the frozen hand-labelled set"),
 ('code', """EVAL = 'slm/eval/eval_set.jsonl' if os.path.exists('slm/eval/eval_set.jsonl') else 'slm/data/dev.jsonl'
 print('evaluating on', EVAL, '(dev.jsonl = teacher labels: development numbers only)' if 'dev' in EVAL else '')

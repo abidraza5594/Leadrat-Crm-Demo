@@ -13,3 +13,6 @@ eval/results/
 
 # Handoff outbox and mock receiver hold contact details
 .outbox/
+
+.venv-train/
+slm/runs/

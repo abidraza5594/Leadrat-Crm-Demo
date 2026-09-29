@@ -25,6 +25,7 @@ READ_ONLY=("I can't do that here. This demo is read-only: I never delete, edit, 
 # Spoken the moment a turn starts so the visitor hears Beacon within a second while the answer is prepared.
 # Voice only (no chat bubble); synthesised once per session in advance. Reported separately in eval/latency.py.
 ACKS={'question':'Let me check that for you.','action':'Sure, one moment.'}
+ACK_AFTER=float(__import__('os').getenv('ACK_AFTER_MS','700'))/1000
 QUESTION=re.compile(r"\b(how|why|what|where|when|which|who|can i|could i|does|do i|is it|are there|kya|kaise|kyu|kyun|kaha|kahan|batao|bataiye|explain)\b|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
@@ -260,7 +261,7 @@ async def screen(id:str,request:Request):
     except Exception:return Response(status_code=204)
 
 async def execute(s,message):
-    started=time.monotonic();answered=False;handbook=None
+    started=time.monotonic();answered=False;handbook=None;ack=None
     try:
         if declined(message):
             s.opted_out=True
@@ -275,7 +276,13 @@ async def execute(s,message):
         if reply:
             s.say(reply)
             return
-        if s.voice_enabled:s.say(ACKS['question' if QUESTION.search(message) else 'action'],kind='ack')
+        if s.voice_enabled:
+            # Only when the answer is slow: an acknowledgement ahead of a ready answer would delay it.
+            turn_messages=len(s.messages)
+            async def acknowledge():
+                await asyncio.sleep(ACK_AFTER)
+                if len(s.messages)==turn_messages:s.say(ACKS['question' if QUESTION.search(message) else 'action'],kind='ack')
+            ack=asyncio.create_task(acknowledge())
         # The handbook answer does not depend on the plan: start it now so the two model calls overlap.
         handbook=asyncio.create_task(docs.answer(message)) if QUESTION.search(message) else None
         selected,source=await plan(message,s.last_feature)
@@ -328,6 +335,7 @@ async def execute(s,message):
             if step['status']=='running':step['status']='failed';step['detail']=s.last_error
     finally:
         if handbook and not handbook.done():handbook.cancel()
+        if ack and not ack.done():ack.cancel()
         # Only aggregate timing; no transcript or records written to logs.
         s.last_turn_ms=round((time.monotonic()-started)*1000)
         # Re-qualify after every turn in the background; a newer turn replaces a stale run.

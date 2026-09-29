@@ -1,0 +1,8 @@
+[
+ {"turn_id": 1, "speaker": "beacon", "text": "Hi! Which part of Leadrat would you like to see?"},
+ {"turn_id": 2, "speaker": "visitor", "text": "We run a brokerage in Pune with 18 agents. Our biggest problem is missed follow-ups."},
+ {"turn_id": 3, "speaker": "beacon", "text": "Roughly how many leads do you get a month?"},
+ {"turn_id": 4, "speaker": "visitor", "text": "Around 400 a month, mostly from MagicBricks and Facebook. Everything is in Excel today."},
+ {"turn_id": 5, "speaker": "beacon", "text": "Would you like our team to follow up?"},
+ {"turn_id": 6, "speaker": "visitor", "text": "Yes, I'm the owner. Call me on +91 90000 04321 next week."}
+]

@@ -1,0 +1,412 @@
+{
+ "$defs": {
+  "Contact": {
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Name"
+    },
+    "email": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Email"
+    },
+    "phone": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Phone"
+    }
+   },
+   "title": "Contact",
+   "type": "object"
+  },
+  "Geography": {
+   "additionalProperties": false,
+   "properties": {
+    "countries": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Countries"
+    },
+    "cities": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cities"
+    }
+   },
+   "title": "Geography",
+   "type": "object"
+  },
+  "Organisation": {
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "anyOf": [
+      {
+       "maxLength": 100,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Name"
+    },
+    "type": {
+     "default": "unknown",
+     "enum": [
+      "brokerage",
+      "developer",
+      "channel_partner",
+      "other_real_estate",
+      "unrelated",
+      "unknown"
+     ],
+     "title": "Type",
+     "type": "string"
+    },
+    "agents": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Agents"
+    }
+   },
+   "title": "Organisation",
+   "type": "object"
+  },
+  "Range": {
+   "additionalProperties": false,
+   "properties": {
+    "min": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Min"
+    },
+    "max": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Max"
+    }
+   },
+   "title": "Range",
+   "type": "object"
+  },
+  "Rationale": {
+   "additionalProperties": false,
+   "properties": {
+    "dimension": {
+     "enum": [
+      "organisation",
+      "agents",
+      "monthly_leads",
+      "pain",
+      "process",
+      "influence",
+      "next_step"
+     ],
+     "title": "Dimension",
+     "type": "string"
+    },
+    "points": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Points"
+    },
+    "evidence_turn_ids": {
+     "default": [],
+     "items": {
+      "type": "integer"
+     },
+     "title": "Evidence Turn Ids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "dimension",
+    "points"
+   ],
+   "title": "Rationale",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "description": "Full SLM output: extraction plus the scored, routable part.",
+ "properties": {
+  "role": {
+   "anyOf": [
+    {
+     "maxLength": 80,
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Role"
+  },
+  "seniority": {
+   "default": "unknown",
+   "enum": [
+    "owner",
+    "executive",
+    "manager",
+    "individual_contributor",
+    "unknown"
+   ],
+   "title": "Seniority",
+   "type": "string"
+  },
+  "organisation": {
+   "$ref": "#/$defs/Organisation",
+   "default": {
+    "name": null,
+    "type": "unknown",
+    "agents": null
+   }
+  },
+  "pain_points": {
+   "anyOf": [
+    {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Pain Points"
+  },
+  "current_tooling": {
+   "anyOf": [
+    {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Current Tooling"
+  },
+  "process": {
+   "default": "unknown",
+   "enum": [
+    "manual",
+    "unsatisfied_crm",
+    "satisfied_crm",
+    "unknown"
+   ],
+   "title": "Process",
+   "type": "string"
+  },
+  "geography": {
+   "$ref": "#/$defs/Geography",
+   "default": {
+    "countries": null,
+    "cities": null
+   }
+  },
+  "monthly_leads": {
+   "$ref": "#/$defs/Range",
+   "default": {
+    "min": null,
+    "max": null
+   }
+  },
+  "lead_sources": {
+   "anyOf": [
+    {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Lead Sources"
+  },
+  "influence": {
+   "default": "unknown",
+   "enum": [
+    "approver",
+    "sponsored_evaluator",
+    "none",
+    "unknown"
+   ],
+   "title": "Influence",
+   "type": "string"
+  },
+  "next_step": {
+   "default": "unknown",
+   "enum": [
+    "within_30_days",
+    "later",
+    "declined",
+    "unknown"
+   ],
+   "title": "Next Step",
+   "type": "string"
+  },
+  "consent": {
+   "default": false,
+   "title": "Consent",
+   "type": "boolean"
+  },
+  "contact": {
+   "$ref": "#/$defs/Contact",
+   "default": {
+    "name": null,
+    "email": null,
+    "phone": null
+   }
+  },
+  "evidence": {
+   "additionalProperties": {
+    "items": {
+     "type": "integer"
+    },
+    "type": "array"
+   },
+   "default": {},
+   "title": "Evidence",
+   "type": "object"
+  },
+  "schema_version": {
+   "const": "beacon.qualification.v1",
+   "default": "beacon.qualification.v1",
+   "title": "Schema Version",
+   "type": "string"
+  },
+  "icp_score": {
+   "anyOf": [
+    {
+     "maximum": 100,
+     "minimum": 0,
+     "type": "integer"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Icp Score"
+  },
+  "score_range": {
+   "items": {
+    "type": "integer"
+   },
+   "maxItems": 2,
+   "minItems": 2,
+   "title": "Score Range",
+   "type": "array"
+  },
+  "score_rationale": {
+   "items": {
+    "$ref": "#/$defs/Rationale"
+   },
+   "title": "Score Rationale",
+   "type": "array"
+  },
+  "route": {
+   "enum": [
+    "sales_handoff",
+    "human_review",
+    "nurture",
+    "graceful_close"
+   ],
+   "title": "Route",
+   "type": "string"
+  }
+ },
+ "required": [
+  "score_range",
+  "score_rationale",
+  "route"
+ ],
+ "title": "Qualification",
+ "type": "object"
+}

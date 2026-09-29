@@ -46,11 +46,14 @@ def shots():
 # ---------------------------------------------------------------- backends
 def openai_backend(model):
     import httpx
+    from dotenv import load_dotenv; load_dotenv(ROOT / '.env')
     key = os.environ['OPENAI_API_KEY']
+    from slm.labels import Qualification
+    SCHEMA = Qualification.model_json_schema()   # the hosted model gets the output schema, as a production call would
     def generate(msgs):
         r = httpx.post('https://api.openai.com/v1/responses', timeout=90, headers={'Authorization': 'Bearer ' + key}, json={
             'model': model, 'store': False, 'input': msgs, 'max_output_tokens': 1500, 'reasoning': {'effort': 'low'},
-            'text': {'format': {'type': 'json_object'}}})
+            'text': {'format': {'type': 'json_schema', 'name': 'beacon_qualification_v1', 'schema': SCHEMA, 'strict': False}}})
         r.raise_for_status(); data = r.json()
         text = ''.join(c.get('text', '') for i in data.get('output', []) if i.get('type') == 'message' for c in i.get('content', []) if c.get('type') == 'output_text')
         return text, data.get('usage', {})

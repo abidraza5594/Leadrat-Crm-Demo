@@ -19,6 +19,7 @@ if not os.path.exists('beacon'):
     subprocess.run(['unzip', '-q', next(iter(up)), '-d', 'beacon'], check=True)
 os.chdir('beacon'); sys.path.insert(0, os.getcwd())
 subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'transformers', 'peft', 'bitsandbytes', 'accelerate', 'pydantic'], check=True)
+subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', '-q', 'torchao'], check=False)  # Colab's preinstalled torchao is too old for peft
 print(subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv'], capture_output=True, text=True).stdout)"""),
 ('md', "## 1. Raw data → dataset (teacher scripts reproduce the raw batches; build.py validates, scores, splits)"),
 ('code', """import glob

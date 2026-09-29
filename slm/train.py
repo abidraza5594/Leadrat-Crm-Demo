@@ -39,7 +39,8 @@ def main():
     tok = AutoTokenizer.from_pretrained(BASE)
 
     def encode(row):
-        prompt = tok.apply_chat_template(messages(row['transcript']), add_generation_prompt=True, tokenize=True)
+        prompt = tok.apply_chat_template(messages(row['transcript']), add_generation_prompt=True, tokenize=False)
+        prompt = tok(prompt, add_special_tokens=False)['input_ids']
         answer = tok(target_text(row['target']) + tok.eos_token, add_special_tokens=False)['input_ids']
         return {'input_ids': (prompt + answer)[:args.max_len], 'labels': ([-100] * len(prompt) + answer)[:args.max_len]}
 
@@ -64,7 +65,7 @@ def main():
         target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']))
     model.print_trainable_parameters()
     training = TrainingArguments(output_dir=str(out / 'checkpoints'), per_device_train_batch_size=1, per_device_eval_batch_size=1,
-        gradient_accumulation_steps=args.grad_accum, num_train_epochs=args.epochs, learning_rate=args.lr, warmup_ratio=0.05,
+        gradient_accumulation_steps=args.grad_accum, num_train_epochs=args.epochs, learning_rate=args.lr, warmup_steps=max(1, round(0.05 * args.epochs * len(train) / args.grad_accum)),
         lr_scheduler_type='cosine', fp16=True, logging_steps=5, eval_strategy='epoch', save_strategy='epoch', save_total_limit=1,
         seed=SEED, report_to=[], dataloader_pin_memory=False)
     trainer = Trainer(model=model, args=training, train_dataset=train, eval_dataset=dev, data_collator=collate)

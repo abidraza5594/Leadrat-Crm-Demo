@@ -16,3 +16,4 @@ eval/results/
 
 .venv-train/
 slm/runs/
+beacon.zip

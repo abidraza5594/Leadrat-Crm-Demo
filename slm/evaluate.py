@@ -66,7 +66,8 @@ def hf_backend(base, adapter=None):
         model = PeftModel.from_pretrained(model, adapter)
     model.eval()
     def generate(msgs):
-        ids = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt').to(model.device)
+        text = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+        ids = tokenizer(text, add_special_tokens=False, return_tensors='pt')['input_ids'].to(model.device)
         with torch.no_grad():
             out = model.generate(ids, max_new_tokens=900, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         new = out[0][ids.shape[1]:]

@@ -97,6 +97,9 @@ out = model.generate(ids, max_new_tokens=900, do_sample=False, pad_token_id=tok.
 print(json.loads(tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)))
 ```
 
+**Google Colab:** Colab ships an old `torchao` that makes peft fail with "Found an incompatible version of torchao".
+Run `!pip uninstall -y torchao`, then **Runtime → Restart session**, before loading the adapter.
+
 Or use the bundled script: `python inference.py example_transcript.json --4bit`.
 
 For a 4 GB GPU, load the base with

@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from slm.prompting import messages, parse, rescore  # noqa: E402
+from slm.prompting import messages, parse, rescore, facts_messages, parse_facts  # noqa: E402
 
 RESULTS = ROOT / 'slm' / 'results'
 SHOT_IDS = ['b2-001', 'b4-008', 'b5-038']   # fixed few-shot examples: high fit, injection+decline, Hinglish correction
@@ -139,23 +139,23 @@ def rescore_route(r):
 
 # ---------------------------------------------------------------- commands
 def run(args):
-    rows = load(args.eval)
+    rows = [r for r in load(args.eval) if args.lang is None or r.get('language') == args.lang]
     few = shots() if args.system in {'A', 'B'} else []
     if args.backend == 'openai': generate = openai_backend(args.model or os.getenv('OPENAI_MODEL', 'gpt-6-luna'))
     else: generate = hf_backend(args.base, args.adapter if args.system == 'C' else None)
     RESULTS.mkdir(exist_ok=True); out_rows = []
     for i, row in enumerate(rows, 1):
         started = time.perf_counter()
-        try: text, usage = generate(messages(row['transcript'], few))
+        try: text, usage = generate(facts_messages(row['transcript']) if args.format == 'facts' else messages(row['transcript'], few))
         except Exception as exc: text, usage = f'ERROR {type(exc).__name__}', {}
         ms = round((time.perf_counter() - started) * 1000)
-        pred, reason = parse(text, row['transcript'])
+        pred, reason = (parse_facts if args.format == 'facts' else parse)(text, row['transcript'])
         out_rows.append({'id': row['id'], 'raw': text, 'pred': pred.model_dump() if pred else None, 'reason': reason,
                          'gold': row['gold'], 'ms': ms, 'usage': usage})
         print(f"{args.system} {i}/{len(rows)} {row['id']} {reason or 'ok'} {ms}ms", flush=True)
     (RESULTS / f'{args.system}.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in out_rows), 'utf-8')
     m = metrics(out_rows, args.price_in, args.price_out, args.gpu_hourly)
-    m.update(system=args.system, backend=args.backend, eval_file=str(args.eval), model=args.model or (os.getenv('OPENAI_MODEL', 'gpt-6-luna') if args.backend == 'openai' else args.base), adapter=args.adapter)
+    m.update(format=args.format, lang=args.lang, system=args.system, backend=args.backend, eval_file=str(args.eval), model=args.model or (os.getenv('OPENAI_MODEL', 'gpt-6-luna') if args.backend == 'openai' else args.base), adapter=args.adapter)
     (RESULTS / f'{args.system}.json').write_text(json.dumps(m, indent=1), 'utf-8')
     print(json.dumps(m, indent=1))
 
@@ -173,7 +173,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run'); r.add_argument('--system', choices='ABC', required=True); r.add_argument('--backend', choices=['openai', 'hf'], required=True)
     r.add_argument('--eval', default=str(ROOT / 'slm' / 'eval' / 'eval_set.jsonl')); r.add_argument('--model'); r.add_argument('--base', default='Qwen/Qwen2.5-1.5B-Instruct')
-    r.add_argument('--adapter'); r.add_argument('--price-in', type=float, default=0.0); r.add_argument('--price-out', type=float, default=0.0)
+    r.add_argument('--adapter'); r.add_argument('--format', choices=['full', 'facts'], default='full'); r.add_argument('--lang'); r.add_argument('--price-in', type=float, default=0.0); r.add_argument('--price-out', type=float, default=0.0)
     r.add_argument('--gpu-hourly', type=float, default=0.0)
     sub.add_parser('table')
     args = parser.parse_args(); run(args) if args.cmd == 'run' else table(args)

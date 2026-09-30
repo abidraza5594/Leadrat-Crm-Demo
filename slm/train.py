@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from slm.prompting import messages, target_text  # noqa: E402
+from slm.prompting import messages, target_text, facts_messages, facts_target_text  # noqa: E402
 
 BASE = 'Qwen/Qwen2.5-1.5B-Instruct'
 SEED = 20260928
@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--out', required=True); parser.add_argument('--epochs', type=float, default=2)
     parser.add_argument('--max-len', type=int, default=2048); parser.add_argument('--lr', type=float, default=2e-4)
     parser.add_argument('--grad-accum', type=int, default=16)
+    parser.add_argument('--format', choices=['full', 'facts'], default='full', help='facts: the model extracts, the rules score')
+    parser.add_argument('--lang', default=None, help='train/evaluate only on this language code, e.g. en')
     args = parser.parse_args()
     started = time.time()
     import torch
@@ -39,13 +41,15 @@ def main():
     tok = AutoTokenizer.from_pretrained(BASE)
 
     def encode(row):
-        prompt = tok.apply_chat_template(messages(row['transcript']), add_generation_prompt=True, tokenize=False)
+        msgs = facts_messages(row['transcript']) if args.format == 'facts' else messages(row['transcript'])
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
         prompt = tok(prompt, add_special_tokens=False)['input_ids']
-        answer = tok(target_text(row['target']) + tok.eos_token, add_special_tokens=False)['input_ids']
+        answer = tok((facts_target_text if args.format == 'facts' else target_text)(row['target']) + tok.eos_token, add_special_tokens=False)['input_ids']
         return {'input_ids': (prompt + answer)[:args.max_len], 'labels': ([-100] * len(prompt) + answer)[:args.max_len]}
 
-    train = [encode(r) for r in load(ROOT / 'slm' / 'data' / 'train.jsonl')]
-    dev = [encode(r) for r in load(ROOT / 'slm' / 'data' / 'dev.jsonl')]
+    keep = lambda rows: [r for r in rows if args.lang is None or r.get('language') == args.lang]
+    train = [encode(r) for r in keep(load(ROOT / 'slm' / 'data' / 'train.jsonl'))]
+    dev = [encode(r) for r in keep(load(ROOT / 'slm' / 'data' / 'dev.jsonl'))]
     lengths = sorted(len(x['input_ids']) for x in train)
     truncated = sum(len(x['input_ids']) >= args.max_len for x in train)
     print(f'train {len(train)} dev {len(dev)} tokens p50 {lengths[len(lengths)//2]} p95 {lengths[int(.95*len(lengths))]} max {lengths[-1]} truncated {truncated}', flush=True)
@@ -73,7 +77,7 @@ def main():
     model.save_pretrained(out / 'adapter'); tok.save_pretrained(out / 'adapter')
     data = {n: hashlib.sha256((ROOT / 'slm' / 'data' / f'{n}.jsonl').read_bytes()).hexdigest() for n in ['train', 'dev']}
     meta = {'base_model': BASE, 'licence': 'Apache-2.0', 'method': 'QLoRA NF4 r16 a32, batch 1 x grad-accum ' + str(args.grad_accum),
-            'epochs': args.epochs, 'max_len': args.max_len, 'seed': SEED, 'train_examples': len(train), 'dev_examples': len(dev),
+            'format': args.format, 'lang': args.lang, 'epochs': args.epochs, 'max_len': args.max_len, 'seed': SEED, 'train_examples': len(train), 'dev_examples': len(dev),
             'train_seconds': round(train_seconds), 'total_seconds': round(time.time() - started),
             'peak_vram_gib': round(torch.cuda.max_memory_allocated() / 2**30, 2), 'peak_reserved_gib': round(torch.cuda.max_memory_reserved() / 2**30, 2),
             'gpu': torch.cuda.get_device_name(0), 'platform': platform.platform(),

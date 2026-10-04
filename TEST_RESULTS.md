@@ -120,3 +120,47 @@ Limits: I wrote these 50 questions and tuned retrieval while running them, so th
 All 29 pages produce chunks; each of the 13 modules has its 6 sections (purpose, feature catalogue, operating/setup flow, rules, troubleshooting, response guidance) plus the handbook guidance pages. Of 1,244 distinct words in the PDF, 47 are in no chunk: module numbers and section headings (kept as chunk labels), removed table headers, and words that appear only in the excluded "Questions FLOE should be able to answer" lists. Their answers exist elsewhere in the module; synonyms were added for "outdated", "database", "move" and "deactivate". Eval results were unchanged after the audit (llm 30/30 and 20/20; extractive 20/30 and 18/20).
 
 Chat-path fix found in the audit: a question that also triggers a screen demo lost its handbook answer when the demo could not run, and Hinglish questions with the question word mid-sentence ("… kyun hai") were not recognised. The handbook answer is now given first and kept when the demo fails.
+
+## Demo readiness check — 1 October 2026
+
+82 automated tests passed after fixes to natural greetings, visible login detection, expired-login screen status, and duplicate-message prevention on request retries. JavaScript syntax check passed.
+
+Live browser checks passed: updated CRM sign-in, automatic login recovery, Leads, Projects, Tasks, Dashboard, and opening the Add Lead form without saving. Earlier checks confirmed lead-source explanations, refusal to invent pricing, and refusal to delete CRM data. Voice generation produced audio; after enabling Voice on, the widget displayed Speaking during the form explanation.
+
+Limits: real microphone recognition and actual speaker audibility were not independently verified. These are demo-flow checks, not complete production acceptance or load testing. The new Kaggle adapter remains separate from the live application; these results do not evaluate it. One earlier chat timeout caused a duplicate on retry; request IDs now prevent the same accepted request being processed twice, covered by an automated test. Intermittent latency itself is not claimed resolved.
+
+Detailed record: artifacts/demo-checks-2026-10-01.json. Screenshot: artifacts/demo-voice-on.png. No credentials are included in these records.
+
+## Feature explanations and customer JSON — 1 October 2026
+
+Current application uses the hosted model; the Kaggle adapter is not connected. All 30 feature questions covering 13 handbook modules passed the expected-source check, and review found the saved replies consistent with the cited documentation. Ten unsupported questions were refused. This is a small development set, not a general accuracy claim. Some replies still use terms such as tenant and mapping.
+
+Initial customer extraction frequently rejected model JSON and fell back to incomplete rules. Fixed by using facts-only extraction with a strict hosted response schema and computing scores/routes locally. Distinct private contact placeholders now preserve corrections and withdrawals without exposing contact values to the hosted service. Trailing email punctuation is excluded. A final explicit refusal overrides a stale follow-up decision and clears consent.
+
+Retest: 13/13 synthetic customer scenarios passed all 51 selected checks. An additional real session API check passed name, team size, monthly leads, no consent, no delivery, and hosted-source checks. These are selected-field assertions, not full semantic grading of every output. No handoff was delivered. The full unit suite passed 85 tests before the last decline guard; 33 affected tests passed afterward, including the new guard regression.
+
+Evidence files: artifacts/acceptance-summary-2026-10-01.json; artifacts/acceptance-2026-10-01.json (initial results); artifacts/acceptance-2026-10-01-more-features.json; artifacts/acceptance-2026-10-01-fixed.json (final customer results); artifacts/live-customer-check-2026-10-01.json. Example qualification and undelivered handoff JSON are saved separately. Backend refreshed and demo left ready with Voice on.
+
+
+## Latest adapter application checks — 1 October 2026
+
+This section supersedes the earlier hosted-model deployment status. The v4 adapter is active locally, with its published weight hash verified. Application health reports local mode and no external LLM calls. The backend was refreshed after the final validation fixes. The comparison workbook was completed and delivered before switching the application; its raw benchmark results remain unchanged.
+
+93 automated tests passed, with seven dependency/Windows pipe-cleanup warnings. Application validation now preserves explicit customer names, avoids using a name as a job title or assuming ownership, and distinguishes absent permission from an explicit refusal. These are application fixes, not changes to the trained weights or raw comparison scores.
+
+After voice generation stopped, NVIDIA reported only the Beacon model process, 0% idle GPU utilization, 1433 MiB used and 2530 MiB free. A real model retest returned Neha, corrected team size 8, consent false and human review correctly, in 89.42 seconds (artifacts/local-v4-gpu-free-final-validated.json). Prior warm checks took 33.91 and 26.52 seconds; response time is variable and remains a limitation. Earlier cold retries were slower. These selected checks are not overall accuracy or production-readiness evidence.
+
+The current handbook mode answered 23/30 supported development questions with the expected source and refused 20/20 unsupported questions; seven supported questions still received a safe refusal. These automatic source checks do not establish semantic correctness of every answer. Evidence: artifacts/local-handbook-tests.json. Real speaker audibility and microphone recognition remain unverified. Public rollout is not recommended until latency and independent answer review are addressed.
+
+
+## Demo and full handbook check — 4 October 2026
+
+Read all 29 pages of the supplied v0.2 PDF, verified identical to the installed handbook, and inventoried all 70 listed questions across 13 modules. Initial extractive answers included irrelevant excerpts despite source-module matches. Added 70 reviewed answers with source pages and conservative exact-normalized matching, plus a reviewed response for the suggested lead-source question. These are authored handbook guidance, not trained-model predictions or a held-out accuracy measurement. Different wording still uses existing retrieval.
+
+Submitted all 70 questions through the actual widget. All reviewed answers observed; 25 questions opened relevant workspaces/controls, 45 explicitly reported explanation-only support. Full procedures were not executed and no CRM records were saved. Fixed incorrect module substitution and a reproducible filter-sheet navigation failure; Filter then Leads passed on retest. Voice generation succeeded for every speech part of all 70 answers. Physical speaker audibility and microphone recognition remain unverified.
+
+13 synthetic customer scenarios passed 51 selected-field checks after fixing delayed demo timing, explicit email withdrawal and Hinglish introductions. Three failing cases were rerun through the real model. 12 final scenarios used the SLM; one used conservative rules fallback and is not counted as model success. No real sales delivery attempted. Payload scenario product areas were mapping fixtures, not click telemetry. Separate live API test passed all 8 assertions, including current-model source and actual Leads-area tracking, in 37.48 seconds.
+
+105 automated checks passed (7 dependency/Windows cleanup warnings). Response latency in customer scenarios remained approximately 26–127 seconds including contention. During startup only ~0.5–0.7 GB system RAM was free. Recommended: supervised demo of verified scope, not a claim that all product workflows or arbitrary paraphrases are reliable. Previous training Excel is unchanged.
+
+Evidence: artifacts/pdf-questions-2026-10-04.json (before); artifacts/pdf-questions-final-2026-10-04.json; artifacts/pdf-ui-2026-10-04.json (all attempts, including failure and retest); artifacts/pdf-voice-2026-10-04.json; artifacts/customers-2026-10-04.json; artifacts/customers-retest-2026-10-04.json; artifacts/customers-final-2026-10-04.json; artifacts/live-demo-final-2026-10-04.json. Human-readable report: outputs/demo-readiness-2026-10-04/Beacon_Demo_Checks.html.

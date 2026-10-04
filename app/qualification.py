@@ -27,4 +27,4 @@ def qualify(f:Facts, declined:bool=False, consent:bool=False, usable_contact:boo
     if route=='sales_handoff' and not(consent and usable_contact and f.intent=='within_30_days'):route='nurture'
     if declined or f.intent=='declined':route='graceful_close'
     return {'icp_score':score,'score_range':[lower,upper],'route':route,'scorer':'rules_fallback','model_status':'not_evaluated',
-        'handoff_allowed':False,'reason':'No evaluated SLM or sales delivery is enabled in this local build.'}
+        'handoff_allowed':False,'reason':'Customer extraction is not yet available. Automatic handoff is not permitted for this preliminary result.'}

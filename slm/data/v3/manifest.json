@@ -1,0 +1,55 @@
+{
+  "seed": 20260930,
+  "status": "synthetic; not independently human reviewed",
+  "new_generated": 600,
+  "accepted": 3400,
+  "excluded": [],
+  "splits": {
+    "train": {
+      "count": 2811,
+      "languages": {
+        "en": 2569,
+        "hi": 35,
+        "hinglish": 207
+      },
+      "routes": {
+        "nurture": 510,
+        "graceful_close": 355,
+        "human_review": 1319,
+        "sales_handoff": 627
+      },
+      "families": 422,
+      "sha256": "b3da6de2a2a1c2fb49a275952b200a0a9fffdf3cffe28161fda929c97015f518"
+    },
+    "dev": {
+      "count": 356,
+      "languages": {
+        "hinglish": 25,
+        "en": 311,
+        "hi": 20
+      },
+      "routes": {
+        "human_review": 206,
+        "graceful_close": 27,
+        "nurture": 59,
+        "sales_handoff": 64
+      },
+      "families": 59,
+      "sha256": "fda21eb87bf4bbc5b38d05a0ed44278985ef636d9fedd661ab10046937ad1113"
+    },
+    "test": {
+      "count": 233,
+      "languages": {
+        "en": 233
+      },
+      "routes": {
+        "human_review": 107,
+        "nurture": 62,
+        "sales_handoff": 44,
+        "graceful_close": 20
+      },
+      "families": 38,
+      "sha256": "d93707cb1c105f98a5d4b46b0b38acc36bd2deae509a592207ae4020a4f25b10"
+    }
+  }
+}

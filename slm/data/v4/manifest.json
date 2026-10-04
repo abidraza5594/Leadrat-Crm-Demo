@@ -1,0 +1,84 @@
+{
+  "created": "2026-10-01",
+  "new_training_examples": 7800,
+  "historical_training_examples": 2811,
+  "historical_test_sha256": "d93707cb1c105f98a5d4b46b0b38acc36bd2deae509a592207ae4020a4f25b10",
+  "scenario_types": [
+    "complete",
+    "multiple_pains",
+    "single_pain",
+    "no_pain",
+    "unknown_pain",
+    "delayed_permission",
+    "withdraw_permission",
+    "chat_only",
+    "no_contact",
+    "email_not_name",
+    "named_intro",
+    "named_late",
+    "name_correction",
+    "third_party_name",
+    "email_correction",
+    "team_correction",
+    "lead_correction",
+    "team_conflict",
+    "lead_conflict",
+    "unknown_authority",
+    "sponsored",
+    "decline",
+    "satisfied",
+    "unsatisfied",
+    "range_cross",
+    "unknown_team",
+    "unknown_leads",
+    "prompt_injection",
+    "beacon_only",
+    "partial"
+  ],
+  "splits": {
+    "train": {
+      "count": 10611,
+      "languages": {
+        "en": 10369,
+        "hinglish": 207,
+        "hi": 35
+      },
+      "routes": {
+        "nurture": 2053,
+        "sales_handoff": 3996,
+        "human_review": 3659,
+        "graceful_close": 903
+      },
+      "sha256": "d0a9094c14416ceb53b8f79649feaa4faac7dc75302b2aa2edd1d584cb774ed4"
+    },
+    "dev": {
+      "count": 716,
+      "languages": {
+        "en": 671,
+        "hinglish": 25,
+        "hi": 20
+      },
+      "routes": {
+        "human_review": 314,
+        "sales_handoff": 215,
+        "graceful_close": 53,
+        "nurture": 134
+      },
+      "sha256": "b6706c6e5b8ab48c28a089829b56475e99bb0a751386fb728403200cddd56c41"
+    },
+    "fresh_test": {
+      "count": 360,
+      "languages": {
+        "en": 360
+      },
+      "routes": {
+        "sales_handoff": 155,
+        "nurture": 71,
+        "human_review": 108,
+        "graceful_close": 26
+      },
+      "sha256": "1e90b0d0b93378ee7f05638cba2afd84d723fb379f382c94481b3c0bc50ebeea"
+    }
+  },
+  "limitations": "Synthetic examples use repeated construction patterns and are not independently human-reviewed. Fresh test excludes exact transcripts and IDs but shares broad scenario construction. Historical test is now a regression benchmark because its errors informed training priorities; neither test proves live customer accuracy."
+}

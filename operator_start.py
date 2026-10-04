@@ -35,6 +35,10 @@ if __name__=='__main__':
     if args.openai:os.environ['PLANNER_PROVIDER']='openai'
     if args.ollama:os.environ['PLANNER_PROVIDER']='ollama'
     provider=os.environ.setdefault('PLANNER_PROVIDER','ollama').strip().lower()
+    if provider=='local':
+        from slm.local_runtime import ensure_local_model
+        print('Loading the current Beacon model locally...', flush=True)
+        ensure_local_model()
     if provider=='openai':
         model=os.environ.setdefault('OPENAI_MODEL','gpt-6-luna')
         if not os.getenv('OPENAI_API_KEY','').strip():

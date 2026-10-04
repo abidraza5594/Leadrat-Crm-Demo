@@ -31,7 +31,8 @@ def test_model_outage_uses_reviewed_keywords_only(monkeypatch):
     monkeypatch.setattr(planner,'classify',down)
     result,source=asyncio.run(planner.plan('where can I see the projects list',None))
     assert result.feature=='projects' and source=='keyword_fallback'
-    with pytest.raises(httpx.HTTPError):asyncio.run(planner.plan('file my income tax',None))
+    result,source=asyncio.run(planner.plan('file my income tax',None))
+    assert result.feature=='unknown' and not result.demo
     assert keyword_match('payroll for employees') is None
 
 @pytest.mark.parametrize('spoken,expected',[

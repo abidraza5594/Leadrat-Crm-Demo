@@ -29,7 +29,8 @@ def test_hosted_budget_and_low_schema(monkeypatch):
     # Past the budget no paid request is made; reviewed keywords may still answer.
     result,source=asyncio.run(planner.plan('Take me to projects please',None))
     assert result.feature=='projects' and source=='keyword_fallback' and not captured
-    with pytest.raises(ValueError,match='limit'):asyncio.run(planner.plan('Does Leadrat run payroll?',None))
+    result,source=asyncio.run(planner.plan('Does Leadrat run payroll?',None))
+    assert result.feature=='unknown' and not result.demo and not captured
     assert planner.USAGE['requests']==1
 
 def test_shortcuts_do_not_call_paid_provider(monkeypatch):

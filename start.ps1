@@ -8,7 +8,7 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
 }
 & '.\.venv\Scripts\python.exe' -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
-if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env'; Write-Host 'Created .env from .env.example. Fill in OPENAI_API_KEY and BEACON_LOGIN_USER/PASSWORD to skip prompts.' }
+if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env'; Write-Host 'Created .env from .env.example. Fill in BEACON_LOGIN_USER/PASSWORD to skip prompts; the default model runs locally.' }
 $site = $null
 if (-not (Get-NetTCPConnection -LocalPort 8011 -State Listen -ErrorAction SilentlyContinue)) {
     $site = Start-Process -FilePath (Resolve-Path '.venv\Scripts\python.exe') -ArgumentList '-m','http.server','8011','--bind','127.0.0.1' -WorkingDirectory (Join-Path $PSScriptRoot 'web') -WindowStyle Hidden -PassThru

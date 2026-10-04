@@ -1,0 +1,19 @@
+{
+  "repo": "abidansari5594/beacon-qualification-qwen2.5-1.5b-qlora",
+  "previous_revision": "11f9e096fa656f8d26706ce59debb40fc2e2d904",
+  "revision": "723dce76fb622f692c7d53658ed52502ec927a72",
+  "weights_sha256": "f1d618ed1152e2cb8443bda4e3316e6f5a704c4cb3fa6e8160bbf5e3afc1d99f",
+  "commit_url": "https://huggingface.co/abidansari5594/beacon-qualification-qwen2.5-1.5b-qlora/commit/723dce76fb622f692c7d53658ed52502ec927a72",
+  "remote_hash_verified": true,
+  "local_adapter": "slm/runs/kaggle-v4-continued/adapter",
+  "training_entrypoint": "slm/continue_latest.py",
+  "evaluation_status": "comparison_complete",
+  "live_qualification_endpoint_configured": true,
+  "comparison_baseline": "slm/results_history/2026-09-30-baseline.json",
+  "comparison_summary": "outputs/beacon-training-v4/comparison/comparison-summary.json",
+  "evaluation_documentation_revision": "03ecde3d223672d4c050fb5198f1c16444147b57",
+  "live_model_url": "http://127.0.0.1:8012/v1",
+  "application_test": "artifacts/local-v4-application-test.json",
+  "application_status": "Latest adapter active locally; OpenAI calls disabled. GPU-free checks passed selected name, team correction and permission fields; variable 26-89 second warm response times remain unsuitable for fast interactive use.",
+  "application_validation": "artifacts/local-v4-gpu-free-final-validated.json"
+}

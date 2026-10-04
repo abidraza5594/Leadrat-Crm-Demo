@@ -60,6 +60,8 @@ def test_no_handoff_without_consent_or_contact():
     assert handoff.eligible(qualified())
     assert not handoff.eligible({**qualified(), 'consent': False})
     assert not handoff.eligible({**qualified(), 'contact': {'name': 'A', 'email': None, 'phone': None}})
+    payload=handoff.brief('no-permission',{**qualified(),'consent':False,'route':'nurture'},{'leads'})
+    assert payload['recommended_next_step'].startswith('Do not contact')
 
 def test_discovery_asks_one_unknown_at_a_time_and_stops_at_four():
     s = main.Session()
@@ -77,7 +79,41 @@ def test_hosted_model_never_sees_email_or_phone(monkeypatch):
     monkeypatch.setattr(qualify, '_hosted', hosted)
     monkeypatch.delenv('QUAL_SLM_URL', raising=False)
     asyncio.run(qualify.qualify_session(chat('yes call me, rohan@acme.example.com or +91 90000 01234')))
-    assert seen and 'rohan@acme' not in seen[0] and '90000 01234' not in seen[0] and '[redacted]' in seen[0]
+    assert seen and 'rohan@acme' not in seen[0] and '90000 01234' not in seen[0] and 'private-contact-1@redacted.invalid' in seen[0]
+
+def test_hosted_facts_keep_withdrawn_contact_removed(monkeypatch):
+    from slm.labels import Extraction
+    async def hosted(msgs):
+        return json.dumps(Extraction(consent=True).model_dump())
+    monkeypatch.setattr(qualify, '_hosted', hosted)
+    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
+    result = asyncio.run(qualify.qualify_session(chat('Contact me at a@example.com.', 'That email is wrong; remove it.')))
+    assert result['source'] == 'hosted'
+    assert result['qualification']['contact']['email'] is None
+
+def test_hosted_selects_corrected_contact_without_revealing_it(monkeypatch):
+    from slm.labels import Extraction, Contact
+    async def hosted(msgs):
+        assert 'new@example.com' not in json.dumps(msgs)
+        return json.dumps(Extraction(contact=Contact(email='private-contact-2@redacted.invalid')).model_dump())
+    monkeypatch.setattr(qualify, '_hosted', hosted)
+    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
+    result = asyncio.run(qualify.qualify_session(chat('a@example.com.', 'Correction: use new@example.com.')))
+    assert result['qualification']['contact']['email'] == 'new@example.com'
+
+def test_email_sentence_punctuation_is_not_part_of_address():
+    q=qualify.rules_extract(qualify.transcript_of(chat('Write to a@example.com.')))
+    assert q.contact.email == 'a@example.com'
+
+def test_explicit_final_decline_overrides_stale_model_decision(monkeypatch):
+    from slm.labels import Extraction
+    async def hosted(msgs):
+        return json.dumps(Extraction(consent=True,next_step='within_30_days').model_dump())
+    monkeypatch.setattr(qualify, '_hosted', hosted)
+    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
+    result = asyncio.run(qualify.qualify_session(chat('I want a demo.', 'I changed my mind. Do not contact me.')))
+    q = result['qualification']
+    assert q['consent'] is False and q['next_step'] == 'declined' and q['route'] == 'graceful_close'
 
 def test_retention_prunes_old_handoffs(monkeypatch):
     import time as t

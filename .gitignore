@@ -2,6 +2,13 @@
 .env
 __pycache__/
 .pytest_cache/
+# Generated report/evaluation artifacts stay local. Keep their builders reviewable.
+/outputs/**
+!/outputs/**/
+!/outputs/**/*.mjs
+!/outputs/**/*.py
+!/outputs/**/*.ipynb
+node_modules/
 artifacts/*
 !artifacts/.gitkeep
 .browser/

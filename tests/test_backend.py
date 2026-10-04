@@ -68,6 +68,21 @@ def test_origins_capacity_and_ownership(client):
     assert client.delete(path,headers=h).status_code==204
     assert client.get(path,headers=h).status_code==404
 
+def test_retried_turn_is_accepted_only_once(client,monkeypatch):
+    async def pending(s,message):await asyncio.sleep(30)
+    monkeypatch.setattr(main,'execute',pending)
+    s,h=start(client);path='/api/sessions/'+s['id']
+    payload={'message':'Show leads','request_id':'retry-test-001'}
+    assert client.post(path+'/turn',headers=h,json=payload).status_code==202
+    repeated=client.post(path+'/turn',headers=h,json=payload)
+    assert repeated.status_code==202 and repeated.json()['duplicate'] is True
+    state=client.get(path,headers=h).json()
+    assert [m['text'] for m in state['messages'] if m['role']=='user']==['Show leads']
+    changed=client.post(path+'/turn',headers=h,json={**payload,'message':'Show projects'})
+    assert changed.status_code==409
+    assert client.post(path+'/turn',json=payload).status_code==404
+    client.delete(path,headers=h)
+
 def test_verified_action_and_refusal():
     async def run():
         s=main.Session(worker=Worker())

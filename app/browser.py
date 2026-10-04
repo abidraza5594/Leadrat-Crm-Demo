@@ -14,6 +14,12 @@ class DemoError(Exception):pass
 
 NAV='a.nav-item,.module-navbar a,[data-ai-nav-route]'
 LOGIN_FIELDS='#inpLoginPassword,input[type="password"]'
+LOGIN_BLOCKED=re.compile(r'\baccount (?:has been|is) locked\b|\b(?:must|need to|required to) reset (?:your )?password\b|\bpassword reset (?:is )?required\b',re.I)
+
+async def any_visible(locator):
+    for i in range(await locator.count()):
+        if await locator.nth(i).is_visible():return True
+    return False
 # Operator-supplied test credentials stay in process memory so the hidden browser can sign in
 # again when the saved login expires. They are removed from the environment (child processes).
 _LOGIN=(os.environ.pop('BEACON_LOGIN_USER','').strip(),os.environ.pop('BEACON_LOGIN_PASSWORD',''))
@@ -124,9 +130,9 @@ class BrowserWorker:
             if 'two-factor' in path:
                 self.login_problem='The CRM asked for two-factor verification. Sign in once with login.ps1.';return False
             try:
-                if await location_banner.count():
+                if await any_visible(location_banner):
                     self.login_problem='The CRM requires device location. Enable Windows Location Services (LOCAL_DEVICE_LOCATION=true) or sign in once with login.ps1.';return False
-                if await page.get_by_text(re.compile(r'Account (has been|is) locked|reset your password',re.I)).count():
+                if await any_visible(page.get_by_text(LOGIN_BLOCKED)):
                     self.login_problem='The CRM refused the sign-in (account locked or password reset required).';return False
             except Exception:pass
         self.login_problem='Automatic sign-in did not complete. Check the test credentials or sign in once with login.ps1.'
@@ -176,7 +182,9 @@ class BrowserWorker:
         """True/False when known; None while a navigation makes the page briefly unreadable."""
         if not self.page or self.page.is_closed():return False
         if urlsplit(self.page.url).path.startswith('/login'):return False
-        try:return await self.page.locator(NAV).count()>0
+        try:
+            if await any_visible(self.page.locator(LOGIN_FIELDS)):return False
+            return await any_visible(self.page.locator(NAV))
         except Exception:return None
 
     async def signed_in(self):
@@ -208,6 +216,12 @@ class BrowserWorker:
             for selector in ['leads-template-share .ic-close-secondary','leads-email-share .ic-close-secondary','leads-advance-filter .ic-close-secondary']:
                 controls=page.locator(selector)
                 if await controls.count()==1 and await controls.is_visible():await controls.click()
+            # This CRM version exposes Cancel on the advanced-filter sheet rather
+            # than the older close icon. Leaving the sheet open blocks navigation.
+            filters=page.locator('leads-advance-filter')
+            if await filters.count()==1 and await filters.is_visible():
+                cancel=filters.get_by_text(re.compile(r'^\s*Cancel\s*$',re.I))
+                if await cancel.count()==1 and await cancel.is_visible():await cancel.click()
             no_email=page.locator('.modal-content').filter(has_text='There is no email ID associated with')
             if await no_email.count()==1:
                 cancel=no_email.get_by_text(re.compile(r'^\s*Cancel\s*$'))

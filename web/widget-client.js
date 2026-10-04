@@ -9,6 +9,7 @@
   let session = null, state = null, timer = null, starting = false, sending = false, ending = false, closed = false;
   let failures = 0, stopPending = false, pollRunning = false, frameLoopRunning = false, shownFrameURL = null, hasFrame = false;
   let lastStateError = '', stepsKey = '', firstRender = true;
+  let pendingRequest = null;
   const rendered = new Map();
   const active = () => !!session && !ending && !closed;
   const ready = () => active() && ['ready','active','login_required'].includes(state?.status) && !state?.busy && !sending && !stopPending;
@@ -99,7 +100,10 @@
       messages.forEach((m,i)=>{ if (m.role==='assistant') { if (i < lastUser) voiceQueue.skip(m); else { voiceQueue.offer(m); if (m.kind !== 'ack') mark('shown'); } } });
     }
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
-    if (next.status === 'login_required' && hasFrame) clearScreen();
+    if (next.status === 'login_required') {
+      if (hasFrame) clearScreen();
+      setText(ui['screen-status'], 'Waiting for CRM sign-in');
+    }
     controls();
     talk.refresh();
   }
@@ -408,6 +412,7 @@
       const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null);const next=await response.json();
       if(!next.id || !next.token)throw new Error('Beacon returned an incomplete session. Please try again.');
       session={id:next.id,token:next.token};state=next;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
+      pendingRequest=null;
       // Server-side voice preparation starts once it knows the preference.
       await request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:voiceQueue.enabled})}).catch(()=>{});
       render(next);poll(session);
@@ -418,11 +423,15 @@
   async function send(message) {
     if(!message.trim() || !canSend())return;
     const target=session,text=message.trim(),interrupt=!!state?.busy;
+    // A response can time out after the server accepted it. Reuse the identifier on retry.
+    if (!pendingRequest || pendingRequest.text!==text) pendingRequest={text,id:crypto.randomUUID()};
+    const requestId=pendingRequest.id;
     latency.push({heard:heardAt,sent:Math.round(performance.now()),voice:voiceQueue.enabled});heardAt=null;
     voiceQueue.unlock();voiceQueue.cancel();voiceHold=(state?.messages||[]).filter(m=>m.role==='user').length;sending=true;error('');lastStateError='';controls();
     const post=async body=>{
-      try{return await request(endpoint('/turn',target),{method:'POST',body:JSON.stringify(body)},target);}
-      catch(e){if(e.status!==429)throw e;await sleep(600);return request(endpoint('/turn',target),{method:'POST',body:JSON.stringify(body)},target);}
+      const payload=JSON.stringify({...body,request_id:requestId});
+      try{return await request(endpoint('/turn',target),{method:'POST',body:payload},target);}
+      catch(e){if(e.status!==429)throw e;await sleep(600);return request(endpoint('/turn',target),{method:'POST',body:payload},target);}
     };
     try {
       try{await post(interrupt?{message:text,interrupt:true}:{message:text});}
@@ -431,7 +440,7 @@
         if(!(e.status===409||(interrupt&&e.status===422)))throw e;
         await request(endpoint('/stop',target),{method:'POST'},target);await post({message:text});
       }
-      if(target===session){ui.message.value='';render({...state,busy:true});poll(target);}
+      if(target===session){pendingRequest=null;ui.message.value='';render({...state,busy:true});poll(target);}
     }
     catch(e){voiceHold=-1;if(target===session)error(e.message);}
     finally{sending=false;controls();}

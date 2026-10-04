@@ -42,12 +42,13 @@ def romanize(text: str) -> str:
 GREETING=r'(hi+|hey+|hello+|hel+o|hola|namaste|namaskar|good (morning|afternoon|evening)|yo)( (there|beacon|team|ji))?'
 def small_talk(message: str) -> str | None:
     """Fixed replies for greetings, thanks and help; no model call and no CRM action."""
-    text=re.sub(r'[^\w\s]','',romanize(message).lower()).strip()
+    text=re.sub(r'\s+',' ',re.sub(r'[^\w\s]',' ',romanize(message).lower())).strip()
     if re.fullmatch(GREETING,text):
         return 'Hello! What would you like to explore in Leadrat? You can ask to see Leads, Projects, Tasks or the dashboard.'
     if re.fullmatch(r'(ok(ay)?\s*)?(thanks?|thank you|thx|ty|shukriya|dhanyavaad|dhanyawad)( (so much|a lot|beacon|ji))?',text):
         return 'You are welcome. Ask me about another feature whenever you are ready.'
-    if re.fullmatch(r'(help|menu|options|what can you do|what can i ask|what do you do|kya kar sakte ho|tum kya kar sakte ho)',text):
+    help_text=re.sub(r'^'+GREETING+r'\s+','',text)
+    if re.fullmatch(r'(help|menu|options|what can you do|what can i ask|what do you do|what can you show(?: me)?(?: today)?|what can (?:i|we) explore(?: today)?|how can you help(?: me)?|kya kar sakte ho|tum kya kar sakte ho)',help_text):
         return ('I can show the Leads list, Add Lead, bulk upload, Projects, Properties, Tasks and the Dashboard. For leads I can open '
             'status changes, meeting and site-visit scheduling, notes, history, documents, reassignment, email, WhatsApp, search and filters. '
             'Ask in English or Hinglish, for example “lead ka status kaise badle”.')
@@ -110,7 +111,28 @@ def shortcut(message: str) -> Plan | None:
     if len(matches)==1:return Plan(feature=matches[0],demo=True)
     return None
 
+def scope_plan(message: str) -> Plan | None:
+    """Do not substitute a superficially similar screen for an unsupported module."""
+    text=romanize(message).lower()
+    unsupported=(r'\boff[ -]?plan\b|\bglobal config\b|\btenant-specific\b|'
+        r'\battendance\b|\bclock[ -]?(?:in|out)\b|\borg(?:anisation|anization)? profile\b|'
+        r'\b(?:listing|listings|mcp|muso|chatgpt|claude|gemini)\b|'
+        r'\b(?:add|create|new)\b.{0,35}\b(?:status|substatus|crm user)\b|'
+        r'\b(?:import|upload)\b.{0,25}\b(?:inventory|properties|units|database)\b|'
+        r'\b(?:create|update|move)\b.{0,30}\bteam\b|\bcompany logo\b')
+    if re.search(unsupported,text):return Plan(feature='unknown',demo=False)
+    if re.search(r'\bwho\b.{0,30}\bchanged\b.{0,30}\blead\b',text):
+        return Plan(feature='history',demo=True)
+    if re.search(r'\btasks?\b',text) and re.search(r'\b(?:link|assign|overdue|completed|create|see)\b',text):
+        return Plan(feature='tasks',demo=True)
+    return None
+
 async def plan(message: str, previous: str | None) -> tuple[Plan,str]:
+    from .handbook_faq import lookup
+    reviewed=lookup(message)
+    if reviewed:return Plan(feature=reviewed['demo_feature'] or 'unknown',demo=bool(reviewed['demo_feature'])),'reviewed_handbook'
+    scoped=scope_plan(message)
+    if scoped:return Plan(feature=scoped.feature,demo=scoped.demo and not explanation_only(message)),'reviewed_scope'
     if message.strip().lower() in {'template','show template','use template','explain more','show me','demo'} and previous in FEATURES:
         return Plan(feature=previous,demo=True),'context_shortcut'
     latin=romanize(message)
@@ -120,7 +142,7 @@ async def plan(message: str, previous: str | None) -> tuple[Plan,str]:
     except (httpx.HTTPError,ValueError,KeyError):
         # Budget exhausted, provider down or invalid output: reviewed keywords only, never a guess.
         fallback=keyword_match(latin)
-        if fallback is None:raise
+        if fallback is None:return Plan(feature='unknown',demo=False),'no_reviewed_screen'
         selected,source=fallback,'keyword_fallback'
     if selected.feature=='unknown':return selected,source
     # The small model's demo flag is unreliable ("where do I see projects" -> false).
@@ -136,6 +158,12 @@ async def classify(message: str, previous: str | None) -> tuple[Plan,str]:
         'Actions are safe demonstrations, never permission to save, send, delete or call. '
         'demo=true for how-to, show, demo, navigation and usage questions; false only for explicitly explanation-only questions. '
         'A contextual follow-up can use the previous feature. Catalogue: '+json.dumps(catalogue))
+    if config.PROVIDER=='local':
+        from .local_model import complete
+        output = await complete([{'role':'system','content':system},
+            {'role':'user','content':json.dumps({'previous_feature':previous,'request':message})}],
+            Plan.model_json_schema(), max_tokens=80)
+        return Plan.model_validate(output), 'local:'+config.LOCAL_CHAT_MODEL
     if config.PROVIDER=='openai':
         key=os.environ.get('OPENAI_API_KEY','')
         if not key:raise ValueError('Hosted planner key is not configured')

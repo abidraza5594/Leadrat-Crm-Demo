@@ -29,6 +29,9 @@ def brief(session_id, q, product_areas_shown, created_at=None):
     """Map a qualification to the approved handoff payload. Unknown values stay null."""
     handoff_id = 'hnd_' + hashlib.sha256(session_id.encode()).hexdigest()[:20]
     org = q['organisation']; evidence = sorted({t for ids in q['evidence'].values() for t in ids})
+    next_step=NEXT_STEP[q['route']]
+    if not q.get('consent') and q['route']!='graceful_close':
+        next_step='Do not contact the customer without explicit permission. Review the missing details first.'
     return {'schema_version': 'beacon.handoff.v1', 'handoff_id': handoff_id, 'session_id': session_id,
             'contact': q['contact'] if any(q['contact'].values()) else None,
             'company': {'name': org.get('name'), 'type': None if org.get('type') == 'unknown' else org.get('type'), 'agents': org.get('agents')},
@@ -38,7 +41,7 @@ def brief(session_id, q, product_areas_shown, created_at=None):
             'lead_sources': q.get('lead_sources'), 'product_areas_shown': sorted(product_areas_shown),
             'icp_score': q.get('icp_score'), 'score_range': q.get('score_range'),
             'score_rationale': q.get('score_rationale', []), 'route': q['route'],
-            'recommended_next_step': NEXT_STEP[q['route']], 'evidence_turn_ids': evidence, 'consent': bool(q.get('consent')),
+            'recommended_next_step': next_step, 'evidence_turn_ids': evidence, 'consent': bool(q.get('consent')),
             'created_at': created_at or now(), 'updated_at': now(), 'delivery_status': 'pending'}
 
 def eligible(q):

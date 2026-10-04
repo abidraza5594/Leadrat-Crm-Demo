@@ -79,6 +79,7 @@ class Session:
     handoff_status:str='not_requested'
     discovery_asked:list=field(default_factory=list)
     closed_politely:bool=False
+    accepted_turns:dict=field(default_factory=dict)
     def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
@@ -159,6 +160,7 @@ class Turn(BaseModel):
     message:str=Field(min_length=1,max_length=2000)
     # The visitor spoke or typed over a running demonstration: stop it and do the new request.
     interrupt:bool=False
+    request_id:str|None=Field(default=None,min_length=8,max_length=80,pattern=r'^[A-Za-z0-9_-]+$')
 
 def owned(id,request,touch=False):
     s=sessions.get(id)
@@ -215,6 +217,7 @@ async def refresh_status(s):
 @app.get('/api/health')
 async def health():
     model_available=False
+    local_details={}
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             data=(await client.get(config.OLLAMA_URL+'/api/tags')).json()
@@ -223,11 +226,18 @@ async def health():
     if config.PROVIDER=='openai':
         import os
         model_available=bool(os.getenv('OPENAI_API_KEY'))
-    return {'status':'ok','provider':config.PROVIDER,'model':config.OPENAI_MODEL if config.PROVIDER=='openai' else config.MODEL,'model_available':model_available,'sandbox_confirmed':config.SANDBOX_CONFIRMED,
+    if config.PROVIDER=='local':
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                response=await client.get(config.LOCAL_MODEL_URL+'/health');response.raise_for_status()
+                local_details=response.json();model_available=bool(local_details.get('ready'))
+        except Exception:model_available=False
+    return {'status':'ok','provider':config.PROVIDER,'model':config.LOCAL_CHAT_MODEL if config.PROVIDER=='local' else config.OPENAI_MODEL if config.PROVIDER=='openai' else config.MODEL,'model_available':model_available,'sandbox_confirmed':config.SANDBOX_CONFIRMED,
       'reasoning_effort':'low' if config.PROVIDER=='openai' else None,'api_usage':USAGE,
       'screen_transport':'authenticated_jpeg_polling','demo_browser':'hidden' if config.HEADLESS else 'visible_window',
       'saved_login':config.BROWSER_STATE.is_file(),'login_credentials_in_memory':has_login_credentials(),
-      'speech':config.TTS_PROVIDER,'qualification':'rules_fallback_not_evaluated','capacity':1}
+      'speech':config.TTS_PROVIDER,'qualification':local_details.get('qualification_model','configured_fallback_ladder'),
+      'qualification_weights_sha256':local_details.get('weights_sha256'),'external_llm_calls':config.PROVIDER=='openai','capacity':1}
 
 @app.post('/api/sessions',status_code=201)
 async def create(body:Create):
@@ -290,6 +300,8 @@ async def execute(s,message):
         if selected.feature=='unknown':
             # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
             s.say((await (handbook or docs.answer(message)))['text'])
+            if source in {'reviewed_handbook','reviewed_scope'}:
+                s.say('I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo.')
             return
         f=FEATURES[selected.feature];s.last_feature=f['id']
         s.worker.notify=s.say
@@ -338,17 +350,24 @@ async def execute(s,message):
         if ack and not ack.done():ack.cancel()
         # Only aggregate timing; no transcript or records written to logs.
         s.last_turn_ms=round((time.monotonic()-started)*1000)
-        # Re-qualify after every turn in the background; a newer turn replaces a stale run.
-        if s.qual_task and not s.qual_task.done():s.qual_task.cancel()
-        s.qual_task=asyncio.create_task(requalify(s))
+        # Exact handbook questions contain no new customer facts. Preserve any
+        # ongoing extraction instead of queueing another expensive GPU request.
+        from .handbook_faq import lookup
+        if not lookup(message):
+            if s.qual_task and not s.qual_task.done():s.qual_task.cancel()
+            s.qual_task=asyncio.create_task(requalify(s))
 
 @app.post('/api/sessions/{id}/turn',status_code=202)
 async def turn(id:str,body:Turn,request:Request):
     s=owned(id,request,touch=True)
-    if s.task and not s.task.done() and not body.interrupt:raise HTTPException(409,'A demonstration is running. Stop it first to change the request.')
-    if time.monotonic()-s.last_turn<0.5:raise HTTPException(429,'Please wait briefly before another request')
     message=body.message.strip()
     if not message:raise HTTPException(422,'Enter a question')
+    message_hash=__import__('hashlib').sha256(message.encode()).hexdigest()
+    if body.request_id in s.accepted_turns:
+        if s.accepted_turns[body.request_id]!=message_hash:raise HTTPException(409,'Request ID was already used for a different question')
+        return {'accepted':True,'duplicate':True}
+    if s.task and not s.task.done() and not body.interrupt:raise HTTPException(409,'A demonstration is running. Stop it first to change the request.')
+    if time.monotonic()-s.last_turn<0.5:raise HTTPException(429,'Please wait briefly before another request')
     if s.task and not s.task.done():
         # Cancellation marks running steps as stopped; nothing half-done is claimed as verified.
         s.task.cancel()
@@ -356,6 +375,9 @@ async def turn(id:str,body:Turn,request:Request):
     s.last_turn=time.monotonic();s.last_error=None;s.steps=[]
     s.turn_started=s.last_turn;s.timings=(s.timings+[{'turn':len(s.timings)+1}])[-200:]
     s.messages.append({'id':secrets.token_urlsafe(12),'role':'user','text':message})
+    if body.request_id:
+        s.accepted_turns[body.request_id]=message_hash
+        if len(s.accepted_turns)>200:s.accepted_turns.pop(next(iter(s.accepted_turns)))
     s.task=asyncio.create_task(execute(s,message))
     return {'accepted':True}
 

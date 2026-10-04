@@ -150,7 +150,11 @@ async def compose(question, evidence):
     # Emails and phone numbers in a question are not needed to answer it and are not sent.
     question = re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+|\+?\d[\d -]{8,}\d', '[redacted]', question)
     user = json.dumps({'question': question, 'reference_excerpts': excerpts}, ensure_ascii=False)
-    if config.PROVIDER == 'openai':
+    if config.PROVIDER == 'local':
+        from .local_model import complete
+        text = json.dumps(await complete([{'role':'system','content':SYSTEM},
+            {'role':'user','content':user}], SCHEMA, max_tokens=280))
+    elif config.PROVIDER == 'openai':
         from .planner import USAGE
         key = os.environ.get('OPENAI_API_KEY', '')
         if not key: raise ValueError('Hosted model key is not configured')
@@ -171,6 +175,8 @@ async def compose(question, evidence):
                 'messages': [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': user}]})
             result.raise_for_status(); text = result.json()['message']['content']
     reply = json.loads(text)
+    if not isinstance(reply.get('supported'), bool) or not isinstance(reply.get('answer'), str) or not isinstance(reply.get('excerpts_used'), list):
+        raise ValueError('Invalid grounded answer')
     # Only excerpt numbers that were actually offered can be cited.
     used = [evidence[i - 1][2] for i in reply.get('excerpts_used', []) if isinstance(i, int) and 1 <= i <= len(evidence)]
     return bool(reply.get('supported')), str(reply.get('answer', '')).strip(), used
@@ -181,7 +187,20 @@ def answer_mode():
 
 async def answer(question):
     """{'grounded': bool, 'text': str, 'sources': [chunk ids], 'mode': str}. Never raises."""
+    from .handbook_faq import lookup
+    reviewed=lookup(question)
+    if reviewed:
+        ids=[c['id'] for c in load() if c['module']==reviewed['module'] and c['page']==reviewed['page']]
+        return {'grounded':True,'text':reviewed['answer']+' '+cite(reviewed),
+                'sources':ids,'mode':'reviewed_handbook'}
     mode = answer_mode()
+    # The installed handbook describes publishing workflows, not a verified provider list
+    # or customer-support timetable. Related keyword hits cannot answer these questions.
+    if mode == 'extractive' and (
+        re.search(r'\b(?:which|what|list|name)\b.{0,60}\bportals?\b', question, re.I)
+        or re.search(r'\bsupport\b.{0,30}\b(?:hours|timings|schedule|24.?7)\b', question, re.I)
+    ):
+        return {'grounded':False,'text':REFUSAL,'sources':[],'mode':'not_documented'}
     # With a model, the model verifies support, so recall matters more: wider evidence, looser gate.
     evidence = search(question, k=5 if mode == 'llm' else 3)
     if not evidence:

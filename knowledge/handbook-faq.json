@@ -1,0 +1,646 @@
+{
+  "source_sha256": "4d24c240531cd4f21b52e9ea4db78e0972bbf81a1a79af1abfd4ceb3a5165575",
+  "review_date": "2026-10-04",
+  "scope": "Reviewed answers to the 70 handbook questions; not a model evaluation dataset.",
+  "items": [
+    {
+      "id": "PDF01",
+      "question": "How do I add a new lead status or substatus?",
+      "module": "Global Config",
+      "page": 3,
+      "answer": "In Global Config, check whether the status already exists, then create the approved value. Map a substatus to its parent status and check its active state. Test it in the lead form and reports; this is different from changing one lead's status.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF02",
+      "question": "Why is a newly created value not appearing in a form?",
+      "module": "Global Config",
+      "page": 4,
+      "answer": "Check the value's active state, parent mapping, applicable module or form, and your permission. If those are correct, verify whether the saved value reaches the form before escalating.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF03",
+      "question": "Can I deactivate an old source without affecting existing leads?",
+      "module": "Global Config",
+      "page": 3,
+      "answer": "Do not assume there is no impact. Deactivating a source can affect filters, reports, imports and integrations. Review existing usage and external mappings, preserve historical meaning, and test the affected screens before retiring it.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF04",
+      "question": "How do I add a tenant-specific field?",
+      "module": "Global Config",
+      "page": 3,
+      "answer": "Use the custom-field configuration in Global Config. Choose its label, data type, required or optional setting, applicable module and allowed options. Check for duplicates and test the field in the intended form.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF05",
+      "question": "Why does a filter behave incorrectly after changing a field type or master value?",
+      "module": "Global Config",
+      "page": 4,
+      "answer": "Compare the field's stored data type and old values with the new configuration. Renamed masters or historical text and IDs can change matching. Check mappings and filter logic before treating it as a defect.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF06",
+      "question": "How do I see my team’s lead performance for a selected period?",
+      "module": "Dashboard",
+      "page": 5,
+      "answer": "Open Dashboard, select the required date range and team or user scope, then review the team-performance view. Compare results using the same date basis and permissions; use underlying records to investigate unexpected counts.",
+      "demo_feature": "dashboard",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF07",
+      "question": "Why does my dashboard count differ from another user’s?",
+      "module": "Dashboard",
+      "page": 6,
+      "answer": "Compare your role, team hierarchy, record visibility, filters and date basis with the other user's. Different permitted records can legitimately produce different counts.",
+      "demo_feature": "dashboard",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF08",
+      "question": "Why is a project/source not showing in the filter?",
+      "module": "Dashboard",
+      "page": 6,
+      "answer": "If you mean a Dashboard filter, check that the project or source master is active and visible to your account. If you mean a different screen, tell me which one so I can check the right configuration.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF09",
+      "question": "Why does a dashboard card not match the number of leads I can find manually?",
+      "module": "Dashboard",
+      "page": 5,
+      "answer": "Use the same date field, time zone, filters and record visibility in both views. Check duplicate records and source status or project values, then compare the widget with its underlying records.",
+      "demo_feature": "dashboard",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF10",
+      "question": "Why is a widget empty even though we have data?",
+      "module": "Dashboard",
+      "page": 6,
+      "answer": "Check the widget's filters, your permissions and whether eligible records exist for that metric. Broaden the scope where appropriate and verify the source records before escalating.",
+      "demo_feature": "dashboard",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF11",
+      "question": "How do I create a new lead?",
+      "module": "Lead Management",
+      "page": 7,
+      "answer": "Open Leads and choose Add Lead. Enter the required customer and contact details, source and applicable enquiry information. Review required fields before saving. I can show the form and leave it unsaved.",
+      "demo_feature": "add_lead",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF12",
+      "question": "Why can’t I see a lead that another user can see?",
+      "module": "Lead Management",
+      "page": 8,
+      "answer": "Check lead ownership, team hierarchy, role and record access, plus current filters. Confirm the record exists and compare the affected user's access with the user who can see it; do not assume deletion.",
+      "demo_feature": "leads",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF13",
+      "question": "How do I change the owner of a lead?",
+      "module": "Lead Management",
+      "page": 7,
+      "answer": "Open the lead's assignment or reassignment control, select an eligible owner and review your permission and the intended change. Owner changes should remain traceable in history. The demo stops before saving.",
+      "demo_feature": "reassign",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF14",
+      "question": "Why is a status/substatus missing?",
+      "module": "Lead Management",
+      "page": 8,
+      "answer": "Check the status or substatus in Global Config: it must be active and, where applicable, mapped to the correct parent status. Correct that configuration and retest the lead form.",
+      "demo_feature": "status",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF15",
+      "question": "Where can I see who changed the lead owner or status?",
+      "module": "Lead Management",
+      "page": 7,
+      "answer": "Open the lead's History or audit view. Review the recorded owner or status changes and their timing before changing configuration. What is visible depends on the history available to your account.",
+      "demo_feature": "history",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF16",
+      "question": "How do I filter leads by multiple conditions?",
+      "module": "Lead Management",
+      "page": 7,
+      "answer": "Use the lead filters and combine the required conditions. Check AND versus OR grouping, field data types and blank or historical values so the results match what you intend.",
+      "demo_feature": "filters",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF17",
+      "question": "Why is a project/property not available on the lead?",
+      "module": "Lead Management",
+      "page": 8,
+      "answer": "Check the project's or property's active state, your access and the mapping used by the lead. A missing option can be an access or master-data issue; do not create a duplicate just to make it appear.",
+      "demo_feature": "leads",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF18",
+      "question": "How do I import a customer database?",
+      "module": "Data Management",
+      "page": 9,
+      "answer": "In Data Management, prepare a clean file with stable headers and required identifiers. Map columns to compatible CRM fields, validate a small sample, then review successful, duplicate and rejected rows before assigning records.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF19",
+      "question": "Why did some rows fail to import?",
+      "module": "Data Management",
+      "page": 10,
+      "answer": "Check the import's rejection reasons, required fields, data formats, column mappings and duplicate rules. Correct the failed rows and retry them selectively rather than blindly importing the entire file again.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF20",
+      "question": "Why is the imported count lower than the file row count?",
+      "module": "Data Management",
+      "page": 10,
+      "answer": "Reconcile successful records, duplicates and rejected rows against the file total. A lower imported count does not automatically mean data was lost.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF21",
+      "question": "How do I filter records using multiple conditions?",
+      "module": "Data Management",
+      "page": 9,
+      "answer": "For Data Management, use filters or segments with the required conditions and verify AND versus OR grouping and field types. If you mean Leads instead, tell me so I can show the appropriate screen.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF22",
+      "question": "How do I assign a selected data set to a team/user?",
+      "module": "Data Management",
+      "page": 9,
+      "answer": "In Data Management, filter and select the intended records, then review assignment or distribution where supported. Check the target user or team's eligibility and the selected record count before applying changes.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF23",
+      "question": "Why is a field from my file not available for mapping?",
+      "module": "Data Management",
+      "page": 10,
+      "answer": "Check that the custom field exists in Global Config, has the right data type and applies to Data Management. Correct its applicability before retrying the mapping.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF24",
+      "question": "How do I create a new project?",
+      "module": "Project",
+      "page": 11,
+      "answer": "Create the project with the approved name and required identity, developer, location and business details. Set its active status, configure user or team access, and map external identifiers where needed. This demo can show the project list, not complete project creation.",
+      "demo_feature": "projects",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF25",
+      "question": "Why can a user not see a project?",
+      "module": "Project",
+      "page": 12,
+      "answer": "Check the project's active state, the user's project and team access, and current filters. Retest with the affected user's permissions instead of assuming an administrator's view is the same.",
+      "demo_feature": "projects",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF26",
+      "question": "Why are leads getting mapped to the wrong project?",
+      "module": "Project",
+      "page": 12,
+      "answer": "Compare the incoming project name or ID with the external-to-CRM project mapping. Correct it to the existing canonical project; avoid creating duplicate project records.",
+      "demo_feature": "projects",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF27",
+      "question": "Why is a project missing from a lead filter?",
+      "module": "Project",
+      "page": 12,
+      "answer": "Check whether the project is active, accessible to the user and correctly mapped for leads. Verify the relevant master and filter scope before creating any new project.",
+      "demo_feature": "projects",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF28",
+      "question": "How do I link inventory/properties to a project?",
+      "module": "Project",
+      "page": 11,
+      "answer": "First confirm the correct project already exists. When creating or importing a property or unit, link it to that project and verify the association and access afterward.",
+      "demo_feature": "properties",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF29",
+      "question": "How do I add a property/unit to a project?",
+      "module": "Properties",
+      "page": 13,
+      "answer": "In Properties, create the unit with its unique identifier and required attributes, link it to the correct existing project, and set its status or availability. Verify it appears under that project for an authorised user.",
+      "demo_feature": "properties",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF30",
+      "question": "How do I bulk upload inventory?",
+      "module": "Properties",
+      "page": 13,
+      "answer": "Use the property inventory import where supported. Map project, unit identifier, type, commercial and status fields carefully. Review duplicate and rejected rows and correct only the failed records before retrying.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF31",
+      "question": "Why can’t I find a specific property?",
+      "module": "Properties",
+      "page": 14,
+      "answer": "Check the property's parent project, project access, availability or status and current filters. Search results also depend on correctly stored property attributes.",
+      "demo_feature": "properties",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF32",
+      "question": "Why is a property missing for one user but visible to another?",
+      "module": "Properties",
+      "page": 14,
+      "answer": "Compare the two users' project access and module permissions, then check property status, project linkage and filters. A valid property can be hidden by access restrictions.",
+      "demo_feature": "properties",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF33",
+      "question": "Why does a property filter not return the expected units?",
+      "module": "Properties",
+      "page": 14,
+      "answer": "Compare each stored property value and data type with the filter condition. Check project access and status too; numeric area or price ranges will not behave correctly when stored as free text.",
+      "demo_feature": "properties",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF34",
+      "question": "How do I create a listing?",
+      "module": "Listing Management",
+      "page": 15,
+      "answer": "Create the listing with the required property, location, purpose and commercial details. Check mandatory fields and access. If publishing is enabled, validate the provider connection and required portal fields before publishing.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF35",
+      "question": "Why is my listing not appearing for another user?",
+      "module": "Listing Management",
+      "page": 16,
+      "answer": "Check the listing's status, ownership or access scope and filters for the affected user. Compare with an authorised working account before assuming the listing was not created.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF36",
+      "question": "Why did portal publishing fail?",
+      "module": "Listing Management",
+      "page": 16,
+      "answer": "Read the portal's rejection response first. Check mandatory fields, field mappings, provider credentials and media requirements where relevant. Correct the reported issue before retrying.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF37",
+      "question": "Why is a listing active in CRM but not visible on the portal?",
+      "module": "Listing Management",
+      "page": 15,
+      "answer": "A valid CRM listing can still be rejected by a portal's requirements. Check the publish or sync response, required fields, mapping and provider connection; an active CRM status alone does not prove publication.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF38",
+      "question": "How do I update price or listing availability?",
+      "module": "Listing Management",
+      "page": 15,
+      "answer": "Use the listing's authorised editing controls to update price, availability and status, then verify internal and connected views remain consistent. The available fields and publishing behaviour depend on your setup.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF39",
+      "question": "Why can’t I find an off-plan project?",
+      "module": "Offplan",
+      "page": 18,
+      "answer": "Check access to Offplan, supported filters and whether its external source returns the project. If the source returns it but the screen does not, escalate with the source ID; do not substitute a normal Project record.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF40",
+      "question": "Why is Offplan data different from the Project module?",
+      "module": "Offplan",
+      "page": 17,
+      "answer": "Offplan may use a separate external feed or API, while Project contains the CRM's standard master records. Establish which source owns the disputed value before comparing or changing it.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF41",
+      "question": "Why does a project show outdated inventory/details?",
+      "module": "Offplan",
+      "page": 18,
+      "answer": "If this is Offplan, check the feed or API refresh and latest source payload. Avoid manually changing source-controlled data; escalate with a timestamp and source evidence. For standard Projects, first confirm which screen and record are affected.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF42",
+      "question": "How is an Offplan project linked to a lead?",
+      "module": "Offplan",
+      "page": 17,
+      "answer": "The supported lead workflow uses a mapping from the Offplan project or external source ID into CRM project context. Check that mapping if the wrong association appears.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF43",
+      "question": "Why are standard filters/options not available in Offplan?",
+      "module": "Offplan",
+      "page": 18,
+      "answer": "Offplan has its own supported fields and current capabilities, which may differ from standard modules. Check whether that filter is available for your setup rather than assuming the same options exist everywhere.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF44",
+      "question": "How do I clock in or clock out?",
+      "module": "Attendance",
+      "page": 19,
+      "answer": "Open Attendance in the supported app, use Clock In at the start and Clock Out at the end, and confirm the recorded status. Location validation applies only when your organisation has enabled it.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF45",
+      "question": "Why can’t I see the attendance option?",
+      "module": "Attendance",
+      "page": 20,
+      "answer": "Check your permission, whether Attendance is enabled for your organisation, and whether your app or client supports it. A missing option is not automatically a location problem.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF46",
+      "question": "Why did my clock-in fail?",
+      "module": "Attendance",
+      "page": 20,
+      "answer": "Check connectivity, device time and your active user status. Check location permission or policy only if location validation is enabled. Record the action, time and error if escalation is needed.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF47",
+      "question": "Why is my attendance not showing for today?",
+      "module": "Attendance",
+      "page": 20,
+      "answer": "First check whether the attendance event was successfully recorded and whether the date and time filters are correct. Retry only if no event exists, to avoid duplicates.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF48",
+      "question": "Why can my manager not see my attendance?",
+      "module": "Attendance",
+      "page": 20,
+      "answer": "Check the manager's attendance-view permission and your team or reporting hierarchy. Managers see attendance within their authorised scope, not necessarily every employee.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF49",
+      "question": "How do I create and assign a task?",
+      "module": "Task",
+      "page": 21,
+      "answer": "In Tasks, define the work clearly, select an eligible active assignee and set the due date and priority where available. Link the relevant record if supported. The current demo shows the task list, not a saved new task.",
+      "demo_feature": "tasks",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF50",
+      "question": "Why can’t a user see a task assigned to them?",
+      "module": "Task",
+      "page": 22,
+      "answer": "Check the task's assignee, status and date filters, the user's active state and access. If the linked lead cannot be opened, check that lead's access separately.",
+      "demo_feature": "tasks",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF51",
+      "question": "How do I find overdue tasks?",
+      "module": "Task",
+      "page": 21,
+      "answer": "Use the task list's available status and date filters to review overdue work. Compare due date and time with the current time and completion status; overdue does not automatically mean a system error.",
+      "demo_feature": "tasks",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF52",
+      "question": "Can I link a task to a lead or project?",
+      "module": "Task",
+      "page": 21,
+      "answer": "Yes, where supported, a task can link to a lead, project or other CRM record. Select the correct record and check the assignee can access it. The demo currently opens Tasks rather than creating that link.",
+      "demo_feature": "tasks",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF53",
+      "question": "Why does a completed task still appear in my list?",
+      "module": "Task",
+      "page": 22,
+      "answer": "Check whether your current list includes completed tasks or historical records. Adjust the filter if you only want pending work; do not delete task history to hide it.",
+      "demo_feature": "tasks",
+      "demo_note": "I can show the relevant workspace; this demonstration does not complete or save the full procedure."
+    },
+    {
+      "id": "PDF54",
+      "question": "How do I add a new CRM user?",
+      "module": "Team - Users & Teams",
+      "page": 23,
+      "answer": "In Users and Teams, create the user with the correct login identity and active state. Assign the intended team, manager, role and required module permissions, then verify project access with a normal user account.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF55",
+      "question": "How do I create or update a team?",
+      "module": "Team - Users & Teams",
+      "page": 23,
+      "answer": "Use Users and Teams to configure the team and reporting hierarchy, then map the appropriate users and manager. Review the intended access scope and verify what affected users can see afterward.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF56",
+      "question": "Why can one user see a module/button that another cannot?",
+      "module": "Team - Users & Teams",
+      "page": 24,
+      "answer": "Compare organisation-level feature enablement, role and module or action permissions. Also check team and project access. Do not grant blanket administrator access just to make a button appear.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF57",
+      "question": "Why can two users with the same role see different leads/projects?",
+      "module": "Team - Users & Teams",
+      "page": 23,
+      "answer": "The same role does not guarantee the same records. Team hierarchy, ownership scope and project mappings can differ, so compare those settings and current filters.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF58",
+      "question": "How do I move a user to another team?",
+      "module": "Team - Users & Teams",
+      "page": 24,
+      "answer": "Update the user's team and manager mapping in Users and Teams, then verify the resulting record visibility. If it appears unchanged, check session or cached behaviour and whether the backend access scope updated.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF59",
+      "question": "What happens to historical records when a user is deactivated?",
+      "module": "Team - Users & Teams",
+      "page": 23,
+      "answer": "Deactivation can stop active access while the user's historical lead or task references remain. Preserve that ownership and audit history rather than deleting it as a cleanup step.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF60",
+      "question": "How do I change the organisation name or profile information?",
+      "module": "Org Profile",
+      "page": 25,
+      "answer": "An authorised administrator can open Org Profile, review the exact field and update approved organisation information. Save and verify the places that use it; some fields may be controlled by support.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF61",
+      "question": "How do I update the company logo?",
+      "module": "Org Profile",
+      "page": 25,
+      "answer": "In Org Profile, use the supported brand or logo field with an approved asset and format. After saving, verify it appears where used. If it does not, check save success and supported asset format.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF62",
+      "question": "Why can’t I edit a particular organisation field?",
+      "module": "Org Profile",
+      "page": 26,
+      "answer": "Check your permission and whether that field is editable for your organisation. Some fields are platform-controlled; use the authorised support process rather than assuming an edit path exists.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF63",
+      "question": "Is this setting under Org Profile, Global Config or Users & Teams?",
+      "module": "Org Profile",
+      "page": 26,
+      "answer": "Organisation identity, contact and branding belong to Org Profile. Shared masters such as lead statuses or sources belong to Global Config. User accounts, roles and team access belong to Users and Teams. Tell me the specific setting if you need help choosing.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF64",
+      "question": "What is the Leadrat AI / MCP page for?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "It explains how supported AI clients can connect to the CRM capabilities Leadrat exposes. You can review available actions, connection instructions, permissions and plan limits. It is separate from MUSO AI.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF65",
+      "question": "Can I connect Leadrat to ChatGPT, Claude or Gemini?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "Where supported for your organisation, choose the client on the Leadrat AI connection page and follow its current client-specific authentication instructions. Availability depends on enabled capabilities; the handbook does not guarantee every client for every account.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF66",
+      "question": "What can the connected AI do inside Leadrat?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "The connected AI can use only the CRM actions and data access currently exposed and enabled for your account. Review the available capabilities on the connection page; user permissions still apply.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF67",
+      "question": "Why is a particular action/tool not available?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 28,
+      "answer": "Check whether the capability has been released, is enabled for your organisation or plan, and is permitted for your user. A working connection does not mean every possible action is available.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF68",
+      "question": "Does the AI connection bypass my CRM permissions?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "No. Connected AI actions still follow Leadrat's organisation, user and record-access permissions. The connection does not grant unrestricted CRM access.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF69",
+      "question": "Is this the same as MUSO AI?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "No. The Leadrat AI connection page and MUSO AI are separate product concepts. Leadrat exposes CRM capabilities; the connected external AI client provides its conversational intelligence.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "PDF70",
+      "question": "What is a tool call and how is usage limited?",
+      "module": "Leadrat AI - MCP Introduction Page",
+      "page": 27,
+      "answer": "A tool call is the connected AI requesting an available CRM capability, such as a supported query or action. Usage limits depend on the current plan or package. The handbook does not specify a numeric allowance, so that needs confirmation for your account.",
+      "demo_feature": null,
+      "demo_note": "I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo."
+    },
+    {
+      "id": "DEMO01",
+      "question": "Explain lead sources",
+      "module": "Global Config",
+      "page": 3,
+      "answer": "Lead sources record where an enquiry came from, including manual entry, imports or configured integrations. Global Config maintains the approved source values and external mappings. Avoid duplicate source labels and check mappings before changing existing values. I can show the Source control on the Add Lead form.",
+      "demo_feature": "lead_sources",
+      "demo_note": "Shows the Source control; does not change a source master or save a lead."
+    }
+  ]
+}

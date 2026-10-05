@@ -63,16 +63,17 @@ def test_no_handoff_without_consent_or_contact():
     payload=handoff.brief('no-permission',{**qualified(),'consent':False,'route':'nurture'},{'leads'})
     assert payload['recommended_next_step'].startswith('Do not contact')
 
-def test_discovery_asks_one_unknown_at_a_time_and_stops_at_four():
+def test_discovery_asks_one_unknown_at_a_time_then_closes_with_contact():
     s = main.Session()
     s.messages.append({'id': 'u1', 'role': 'user', 'text': 'show leads'})
     asked = []
-    for _ in range(6):
+    for _ in range(10):
         before = len(s.messages); main.discover(s)
         # Resolve/skip each pending question before asking the next one.
         s.pending_discovery=None
         asked += [m['text'] for m in s.messages[before:]]
-    assert len(asked) == 4 and asked[0].startswith('To tailor the demo')
+    assert len(asked) == len(main.DISCOVERY)+1 and asked[0].startswith('To tailor the demo')
+    assert asked[-1].startswith('Would you like someone from Leadrat to contact you')
 
 def test_hosted_model_never_sees_email_or_phone(monkeypatch):
     seen = []

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import secrets
 import re
 import time
@@ -11,11 +13,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from . import config
 from .browser import BrowserWorker, DemoError, device_location, has_login_credentials
-from .planner import FEATURES, plan, declined, small_talk, warm_up, write_request, USAGE
+from .planner import FEATURES, Plan, plan, declined, small_talk, warm_up, write_request, USAGE
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
-from .qualify import qualify_session, rules_extract, transcript_of
+from .qualify import EMAIL, PHONE, TOOLING, qualify_session, rules_extract, transcript_of
 from . import handoff as handoffs
 from fastapi.responses import JSONResponse
 from . import docs
@@ -61,6 +63,8 @@ class Session:
     last_feature:str|None=None
     opted_out:bool=False
     shown:set=field(default_factory=set)
+    # The feature Beacon suggested in its last follow-up, so a bare "yes" can run it.
+    offer:str|None=None
     worker:BrowserWorker=field(default_factory=BrowserWorker)
     task:asyncio.Task|None=None
     boot:asyncio.Task|None=None
@@ -288,17 +292,25 @@ async def execute(s,message):
             previous=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant' and not m.get('kind')),None)
             s.say(previous or 'Please name the feature you would like me to explain.')
             return
+        offer,s.offer=s.offer,None
         if accept_discovery_reply(s,message):
             discover(s)
+            # Discovery is finished: move the demo on instead of going quiet.
+            if not s.pending_discovery:follow_up(s)
+            return
+        text=message.strip().lower().rstrip('.!')
+        forced=Plan(feature=offer,demo=True) if offer and AFFIRM.fullmatch(text) else None
+        if offer and not forced and NEGATE.fullmatch(text):
+            s.say('Sure. What would you like to see instead?')
             return
         from .conversation_numbers import count_reply
-        if count_reply(message) is not None or re.fullmatch(r'(?:yes|yeah|yep|no|nope|haan|han|nahi|nahin)',message.strip(),re.I):
-            s.say('Please tell me what you mean, or name the feature you would like to see. I will keep the current screen open.')
+        if not forced and (count_reply(message) is not None or re.fullmatch(r'(?:yes|yeah|yep|no|nope|haan|han|nahi|nahin)',message.strip(),re.I)):
+            s.say('Please tell me what you mean, or name the feature you would like to see.')
             return
         # An unrelated product request supersedes a pending discovery question.
         # A later bare number must not silently answer an old question.
         s.pending_discovery=None
-        reply=small_talk(message)
+        reply=None if forced else small_talk(message)
         if reply:
             s.say(reply)
             return
@@ -311,7 +323,7 @@ async def execute(s,message):
             ack=asyncio.create_task(acknowledge())
         # The handbook answer does not depend on the plan: start it now so the two model calls overlap.
         handbook=asyncio.create_task(docs.answer(message)) if QUESTION.search(message) else None
-        selected,source=await plan(message,s.last_feature)
+        selected,source=(forced,'follow_up') if forced else await plan(message,s.last_feature)
         if s.timings:s.timings[-1].update(plan_ms=round((time.monotonic()-s.turn_started)*1000),plan_source=source)
         if selected.feature=='unknown':
             # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
@@ -332,8 +344,9 @@ async def execute(s,message):
         result=await s.worker.open_module(f)
         step['status']='verified';step['detail']=result
         s.shown.add(f['module'])
-        if f['id'] in {'leads','projects','tasks','properties','dashboard'}:
-            s.say('The '+f['title']+' is open. This shows the workspace; the complete procedure described in the answer has not been demonstrated.')
+        # Only a how-to answer needs the caveat that the screen shows the workspace, not the procedure.
+        if f['id'] in {'leads','projects','tasks','properties','dashboard'} and answered:
+            s.say('The '+f['title']+' is open on screen; the steps above happen from here.')
         if f['id'] not in {'leads','projects','tasks','properties','dashboard'}:
             step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'}
             s.steps.append(step)
@@ -343,7 +356,9 @@ async def execute(s,message):
             if not overview_only:s.shown.add(f['id'])
             s.say(result)
         if not answered:s.say(f['facts'][1])
+        # One question per turn: tailor the demo first, otherwise suggest the next screen.
         discover(s)
+        if not s.pending_discovery:follow_up(s)
     except asyncio.CancelledError:
         for step in s.steps:
             if step['status']=='running':step['status']='stopped';step['detail']='Stopped by the visitor.'
@@ -446,26 +461,49 @@ async def speech(id:str,request:Request,message_id:str|None=None,message_index:i
         return Response(audio,media_type='audio/mpeg')
     except (Exception,asyncio.CancelledError):raise HTTPException(503,'Voice is unavailable. Use browser voice.')
 
-# Discovery: 2–4 short questions, one per turn, only about what is still unknown.
+# Discovery: short questions, one per turn, only about what is still unknown, then the contact question.
 DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a developer or a channel partner?'),
     ('organisation.agents','How many people are on your sales team?'),
     ('monthly_leads','Roughly how many new leads do you get in a month?'),
     ('pain_points','What is the biggest problem with how you handle leads today?'),
     ('process','What do you use to manage leads today: Excel, WhatsApp or another CRM?'),
-    ('influence','Would you be the one deciding on a CRM, or evaluating it for someone else?')]
+    ('influence','Would you be the one deciding on a CRM, or evaluating it for someone else?'),
+    ('next_step','When would you want a new CRM running: within the next month, or later?')]
 
 def known(q,path):
     value=q
     for part in path.split('.'):value=value.get(part) if isinstance(value,dict) else None
     return value not in (None,'unknown',{'min':None,'max':None})
 
+SAVED_CONTACT='Thank you, I have noted your contact details. The Leadrat team will get in touch.'
+AFFIRM=re.compile(r"(?:yes|yeah|yep|yup|sure|ok|okay|haan|han|ha|ji|haan ji|yes please|please|go ahead|show|show me|show it|dikhao|haan dikhao|chalo|of course|why not|let'?s see)")
+NEGATE=re.compile(r'(?:no|nope|nah|nahi|nahin|no thanks|not now|later|baad me|baad mein)')
+# What a visitor usually wants after each screen; the first one not yet shown is suggested.
+NEXT_STEPS={'leads':['add_lead','status','site_visit'],'add_lead':['status','site_visit'],'status':['site_visit','meeting'],
+    'site_visit':['notes','projects'],'meeting':['notes','tasks'],'projects':['properties','leads'],'properties':['matching','projects'],
+    'tasks':['dashboard','leads'],'dashboard':['leads','tasks']}
+DEFAULT_STEPS=['leads','add_lead','status','site_visit','projects','tasks','dashboard']
+
+def follow_up(s):
+    """Close the turn with one concrete next step the visitor can accept with a plain yes."""
+    options=NEXT_STEPS.get(s.last_feature,[])+DEFAULT_STEPS
+    nxt=next((o for o in options if o in FEATURES and o!=s.last_feature and o not in s.shown),None)
+    if not nxt:
+        s.say('What else would you like to see?');return
+    title=FEATURES[nxt]['title']
+    what='how to '+title[0].lower()+title[1:] if title.split()[0] in {'Add','Change','Schedule','Reassign','Edit','Find','Export','Complete','Manage'} else 'the '+title
+    s.offer=nxt
+    s.say(f'Shall I show you {what} next? Or ask me about anything else.')
+
 def discover(s):
-    if s.opted_out or s.pending_discovery or len(s.discovery_asked)>=4:return
+    if s.opted_out or s.pending_discovery:return
     q=(s.qual or {}).get('qualification') or rules_extract(transcript_of(s.messages)).model_dump()
+    # Every unknown fact is needed to score the lead, so each is asked once unless the visitor already said it.
     for path,question in DISCOVERY:
         if path not in s.discovery_asked and path not in s.discovery_answers and not known(q,path):
             s.discovery_asked.append(path);s.pending_discovery=path;s.say(question);return
-    if not q.get('consent') and 'consent' not in s.discovery_asked and len(s.discovery_asked)<4:
+    # The contact question closes discovery.
+    if not q.get('consent') and 'consent' not in s.discovery_asked:
         s.discovery_asked.append('consent')
         s.pending_discovery='consent'
         s.say('Would you like someone from Leadrat to contact you? If yes, share an email or phone number.')
@@ -492,12 +530,12 @@ def accept_discovery_reply(s,message):
             return True
     if not pending:return False
     # Skips and uncertainty answer the discovery turn, not the feature planner.
-    if text in {'skip','skip this','not sure','dont know',"don't know",'pata nahi','later','prefer not to say'}:
+    if text in {'skip','skip this','not sure','dont know',"don't know",'pata nahi','later','prefer not to say'}-({'later'} if pending=='next_step' else set()):
         s.pending_discovery=None
-        s.say('No problem, we can leave that detail unknown. The current demo stays open.')
+        s.say('No problem, we can leave that detail unknown.')
         return True
     # An acknowledgement is not an answer to a count or business-type question.
-    if pending!='consent' and text in {'yes','yeah','yep','no','nope','haan','han','nahi','nahin','ok','okay'}:
+    if pending not in {'consent','contact'} and text in {'yes','yeah','yep','no','nope','haan','han','nahi','nahin','ok','okay'}:
         question=dict(DISCOVERY).get(pending,'Could you share a little more detail?')
         s.say(question+' You can also say skip.')
         return True
@@ -511,26 +549,49 @@ def accept_discovery_reply(s,message):
         if value is not None:
             reply=(f'Got it — {value:,} people on your sales team.' if pending=='organisation.agents' else f'Got it — approximately {value:,} new leads per month.')
         elif re.fullmatch(r'[\d\s.,+\-/]+[a-z ]*',text):
-            s.say('Please give one approximate count, for example 20k or 20,000. I will keep the current demo screen open.')
+            s.say('Please give one approximate count, for example 20k or 20,000.')
             return True
-    elif pending in {'pain_points','process','influence'}:
+    elif pending in {'pain_points','process','influence','next_step'}:
         from .planner import shortcut,romanize
         if not re.search(r'\b(show|open|demo|schedule|explain|dikhao|kholo)\b',text) and not shortcut(romanize(text)):
-            value=message.strip();reply='Thanks, I have noted that.'
+            value=message.strip();reply=noted(s,pending,text)
     elif pending=='consent':
-        if text in {'yes','yeah','haan','han','yes please'}:
-            value=True;reply='You would like a follow-up. Please share the email or phone number the team should use.'
+        contact=re.search(EMAIL,message) or re.search(PHONE,message)
+        if contact or re.match(r'(?:yes|yeah|yep|sure|ok|okay|haan|han|ji)\b',text):
+            value=True
+            reply=(SAVED_CONTACT if contact else 'Great. Please share the email or phone number the team should use.')
         elif text in {'no','nope','nahi','nahin','no thanks'}:
             value=False;s.opted_out=True;reply='Understood. I will not request contact details or arrange a follow-up.'
+    elif pending=='contact':
+        if re.search(EMAIL,message) or re.search(PHONE,message):
+            value=True;reply=SAVED_CONTACT
+        elif text in {'no','nope','nahi','nahin','no thanks'}:
+            value=False;reply='No problem, I will not ask for contact details again.'
+        elif not re.search(r'\b(show|open|demo|how|what|dikhao|kholo)\b',text):
+            s.say('Please share an email address or phone number, or say skip.')
+            return True
     if value is None:return False
     s.discovery_answers[pending]=value;s.pending_discovery=None
-    s.say(reply+' I will keep the current demo screen open.')
+    # Consent without contact details: the next reply is the email or phone number, not a demo request.
+    if pending=='consent' and value is True and reply!=SAVED_CONTACT:s.pending_discovery='contact'
+    s.say(reply)
     return True
+
+def noted(s,pending,text):
+    """Acknowledge a free-text answer in its own terms rather than with a stock phrase."""
+    tool=next((name for pattern,name in TOOLING if re.search(pattern,text)),None)
+    if tool and 'process' not in s.discovery_answers:s.discovery_answers['process']=tool
+    # Neutral on purpose: the qualifier reads this transcript and copies or cites Beacon's paraphrases as the visitor's facts.
+    if pending=='pain_points':return 'Got it, thanks for sharing that.'
+    if pending=='process':return 'Got it, thanks.'
+    if pending=='next_step':return 'Got it, thanks.'
+    return 'Thanks, that helps.'
 
 async def requalify(s):
     result=await qualify_session(list(s.messages))
     if s.id not in sessions:return
     s.qual=result;q=result['qualification']
+    show_handoff(s,result)
     if not s.opted_out and handoffs.eligible(q) and s.handoff_status=='not_requested':
         s.handoff_status='pending'
         s.handoff_status=await handoffs.deliver(handoffs.brief(s.id,q,s.shown))
@@ -539,6 +600,16 @@ async def requalify(s):
     elif q['route']=='graceful_close' and not s.closed_politely and not s.opted_out and q.get('icp_score') is not None:
         s.closed_politely=True
         s.say('Thank you for exploring Leadrat. It may not be the best fit for your business right now, but you are welcome to keep looking around.')
+
+def show_handoff(s,result):
+    """Development aid: print what the sales team would receive after each turn (BEACON_PRINT_HANDOFF=0 turns it off)."""
+    if os.getenv('BEACON_PRINT_HANDOFF','1')=='0':return
+    q=result['qualification']
+    contact='yes' if q['contact'].get('email') or q['contact'].get('phone') else 'no'
+    why=('already sent' if s.handoff_status!='not_requested' else 'visitor opted out' if s.opted_out
+         else 'sending now' if handoffs.eligible(q) else f"not sent: route={q['route']}, consent={bool(q.get('consent'))}, contact={contact}")
+    print(f"\n=== Sales handoff JSON (session {s.id[:8]}, extracted by {result['source']}; {why}) ===",flush=True)
+    print(json.dumps(handoffs.brief(s.id,q,s.shown),indent=2,ensure_ascii=False),flush=True)
 
 @app.post('/mock-crm/handoff')
 async def mock_crm(request:Request):

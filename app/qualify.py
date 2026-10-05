@@ -102,17 +102,28 @@ def parse_extraction(text, turns):
 ORG_WORDS = [('channel_partner', r'\bchannel partners?\b|\bcp firm\b'), ('developer', r'\b(developer|builder|builders|developers)\b'),
              ('brokerage', r'\b(broker|brokers|brokerage|real estate agency|property agency)\b')]
 
+ASKED = [('pain_points', 'What is the biggest problem with how you handle leads today?'),
+         ('process', 'What do you use to manage leads today'), ('consent', 'Would you like someone from Leadrat to contact you?'),
+         ('influence', 'Would you be the one deciding on a CRM'), ('next_step', 'When would you want a new CRM running')]
+EVALUATOR = r'evaluat|someone else|not me|for my (?:boss|manager|director|owner|team)|(?:boss|manager|director|owner|management) (?:decides|will decide)'
+APPROVER = r"\b(?:i|me|main|mai|myself|i decide|i'm|i am|deciding|decision maker|owner|haan|han|yes)\b"
+SOON = r'\b(?:within|this month|next month|asap|immediately|right away|jaldi|soon|this week|next week|[1-4] weeks?|1 month|one month|ek mahine)\b'
+LATER = r'\b(?:later|[2-9] months?|few months|next year|next quarter|baad)\b'
+TOOLING = [(r'\bexcel|spreadsheet|\bsheets?\b', 'Excel'), (r'whats ?app', 'WhatsApp'), (r'\bcrm\b', 'CRM')]
+
 def rules_extract(turns):
     """Conservative deterministic extraction; ambiguous or repeated-conflicting values stay unknown."""
     x = {'organisation': {}, 'monthly_leads': {}, 'contact': {}, 'evidence': {}}
-    orgs, agents, leads = set(), set(), set()
+    orgs, agents, leads, pains, tools = set(), set(), set(), [], []
     from .conversation_numbers import count_reply
-    pending_count=None
+    pending_count=asked=None
     for t in turns:
         if t['speaker'] != 'visitor':
             prompt=t['text'].strip()
             pending_count=('organisation.agents' if prompt=='How many people are on your sales team?' else
                            'monthly_leads' if prompt=='Roughly how many new leads do you get in a month?' else None)
+            # Beacon's own discovery questions give a short reply its meaning ("excels", "yes").
+            asked=next((path for path,start in ASKED if prompt.startswith(start)),None)
             continue
         text = romanize(t['text']).lower(); tid = t['turn_id']
         count=count_reply(text) if pending_count else None
@@ -120,6 +131,20 @@ def rules_extract(turns):
             (agents if pending_count=='organisation.agents' else leads).add(count)
             x['evidence'].setdefault(pending_count,[]).append(tid)
         pending_count=None
+        if asked in {'pain_points','process'} and not re.search(r'\?|\b(show|open|demo|how)\b',text):
+            if asked=='pain_points':pains.append(t['text'].strip());x['evidence'].setdefault('pain_points',[]).append(tid)
+            for pattern,name in TOOLING:
+                if re.search(pattern,text) and name not in tools:tools.append(name);x['evidence'].setdefault('process',[]).append(tid)
+        if asked=='consent':
+            if re.match(r'(yes|yeah|yep|sure|ok|okay|haan|han|ji)\b',text):x['consent']=True;x['evidence']['consent']=[tid]
+            elif re.match(r'(no|nope|nahi|nahin)\b',text):x['consent']=False;x['evidence']['consent']=[tid]
+        if asked=='influence':
+            role='sponsored_evaluator' if re.search(EVALUATOR,text) else 'approver' if re.search(APPROVER,text) else None
+            if role:x['influence']=role;x['evidence']['influence']=[tid]
+        if asked=='next_step':
+            when='within_30_days' if re.search(SOON,text) else 'later' if re.search(LATER,text) else None
+            if when:x['next_step']=when;x['evidence']['next_step']=[tid]
+        asked=None
         for kind, pattern in ORG_WORDS:
             if re.search(pattern, text): orgs.add(kind); x['evidence'].setdefault('organisation.type', []).append(tid)
         number=r'(?<![\w.,-])(\d+(?:,\d+)*(?:\.\d+)?\s*(?:k|thousand|lakhs?|lacs?|million|m)?)'
@@ -139,7 +164,30 @@ def rules_extract(turns):
     else: x['evidence'].pop('organisation.agents', None)
     if len(leads) == 1: n = leads.pop(); x['monthly_leads'] = {'min': n, 'max': n}
     else: x['evidence'].pop('monthly_leads', None)
+    if pains: x['pain_points'] = pains
+    if tools:
+        x['current_tooling'] = tools
+        x['process'] = 'unsatisfied_crm' if 'CRM' in tools else 'manual'
     return Extraction.model_validate(x)
+
+ANCHORED = {'organisation.type': ['organisation'], 'organisation.agents': ['organisation'], 'monthly_leads': ['monthly_leads'],
+            'pain_points': ['pain_points'], 'process': ['process', 'current_tooling'], 'influence': ['influence'], 'next_step': ['next_step']}
+
+def anchor(q, turns):
+    """Direct replies to Beacon's own questions override the model's reading of them ("next month" is not "later")."""
+    rx = rules_extract(turns); update = {}; evidence = dict(q.evidence)
+    for path, fields in ANCHORED.items():
+        if path not in rx.evidence: continue
+        evidence[path] = rx.evidence[path]
+        for name in fields:
+            if name == 'organisation':
+                org = update.get('organisation', q.organisation)
+                key = path.split('.')[1]
+                update['organisation'] = org.model_copy(update={key: getattr(rx.organisation, key)})
+            else: update[name] = getattr(rx, name)
+    # A withdrawal is caught as a decline, so a direct "yes" to the contact question may only add consent.
+    if rx.consent and not q.consent: update['consent'] = True; evidence['consent'] = rx.evidence['consent']
+    return q.model_copy(update={**update, 'evidence': evidence})
 
 async def qualify_session(session_messages):
     """{'qualification': dict, 'source': slm|hosted|rules, 'attempts': [...], 'ms': int}. Never raises."""
@@ -155,7 +203,7 @@ async def qualify_session(session_messages):
             except Exception as exc:
                 q, reason = None, 'unavailable:' + type(exc).__name__
             attempts.append({'step': 'slm', 'attempt': attempt, 'result': reason or 'ok'})
-            if q is not None: return _done(rescore(q), 'slm', attempts, started, turns)
+            if q is not None: return _done(rescore(anchor(q, turns)), 'slm', attempts, started, turns)
             if reason and reason.startswith('unavailable'): break
     else:
         attempts.append({'step': 'slm', 'result': 'not_configured'})
@@ -172,7 +220,7 @@ async def qualify_session(session_messages):
                 value = contact_map.get(getattr(q.contact, field))
                 restored[field] = value if value in visitor_contacts and re.fullmatch(pattern, value or '') else None
             q = q.model_copy(update={'contact': q.contact.model_copy(update=restored)})
-            return _done(rescore(q), 'hosted', attempts, started, turns)
+            return _done(rescore(anchor(q, turns)), 'hosted', attempts, started, turns)
     except Exception as exc:
         attempts.append({'step': 'hosted', 'result': 'unavailable:' + str(exc)[:60]})
     q = complete(rules_extract(turns))

@@ -69,6 +69,8 @@ def test_discovery_asks_one_unknown_at_a_time_and_stops_at_four():
     asked = []
     for _ in range(6):
         before = len(s.messages); main.discover(s)
+        # Resolve/skip each pending question before asking the next one.
+        s.pending_discovery=None
         asked += [m['text'] for m in s.messages[before:]]
     assert len(asked) == 4 and asked[0].startswith('To tailor the demo')
 

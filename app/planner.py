@@ -37,6 +37,7 @@ DEVANAGARI={w:r for r,words in {
 }.items() for w in words.split()}
 
 def romanize(text: str) -> str:
+    text=re.sub(r'\bsite\s*vis(?:it[e]?|te)\b','site visit',text,flags=re.I)
     return re.sub(r'[ऀ-ॣ०-ॿ]+',lambda m:DEVANAGARI.get(m.group(0),m.group(0)),text.replace('।',' '))
 
 GREETING=r'(hi+|hey+|hello+|hel+o|hola|namaste|namaskar|good (morning|afternoon|evening)|yo)( (there|beacon|team|ji))?'
@@ -94,6 +95,10 @@ def shortcut(message: str) -> Plan | None:
     # Fast, conservative interpretation for a single common Lead intent. Ambiguous
     # or compound questions still use the constrained language model.
     if len(text)>180 or re.search(r'\b(not|dont|instead|except|then|all)\b',text):return None
+    if re.fullmatch(r'(?:how (?:can i|i can) )?(?:add|create|import|upload) (?:bulk|multiple) leads?|bulk (?:add|upload|import)(?: leads?)?',text):
+        return Plan(feature='bulk_upload',demo=True)
+    if re.fullmatch(r'(?:how (?:can i|i can) )?(?:bulk (?:delete|remove)(?: leads?)?|(?:delete|remove) (?:bulk|multiple) leads?)',text):
+        return Plan(feature='bulk_update',demo=True)
     if re.search(r'\bwhats?\s*app\b',text) and re.search(r'\b(api|integrated|chat)\b',text):return None
     patterns={
       'add_lead':r'\b(add|create|new|banao|banana|bana|jodo|dalo|daalo)\b.*\bleads?\b|\bleads?\b.*\b(add|create|banao|banana|bana|jod\w*|dal\w*|daal\w*)\b',
@@ -130,10 +135,10 @@ def scope_plan(message: str) -> Plan | None:
 async def plan(message: str, previous: str | None) -> tuple[Plan,str]:
     from .handbook_faq import lookup
     reviewed=lookup(message)
-    if reviewed:return Plan(feature=reviewed['demo_feature'] or 'unknown',demo=bool(reviewed['demo_feature'])),'reviewed_handbook'
+    if reviewed:return Plan(feature=reviewed['demo_feature'] or 'unknown',demo=bool(reviewed['demo_feature']) and not explanation_only(message)),'reviewed_handbook'
     scoped=scope_plan(message)
     if scoped:return Plan(feature=scoped.feature,demo=scoped.demo and not explanation_only(message)),'reviewed_scope'
-    if message.strip().lower() in {'template','show template','use template','explain more','show me','demo'} and previous in FEATURES:
+    if message.strip().lower().rstrip('.!') in {'template','show template','use template','explain more','show me','demo','show it','show this','demo this','show me that','ye dikhao','iska demo dikhao'} and previous in FEATURES:
         return Plan(feature=previous,demo=True),'context_shortcut'
     latin=romanize(message)
     direct=shortcut(latin)

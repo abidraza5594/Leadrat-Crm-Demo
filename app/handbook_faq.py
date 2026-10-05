@@ -20,4 +20,11 @@ def entries():
 def lookup(question):
     # Exact wording after punctuation/case normalization only. Negation, extra
     # instructions and different wording must go through normal retrieval.
-    return entries().get(normalize(question))
+    key=normalize(question)
+    aliases={
+        'how i can add lead':'how do i create a new lead',
+        'how can i add a lead':'how do i create a new lead',
+        'how to add lead':'how do i create a new lead',
+        'how to add a lead':'how do i create a new lead',
+    }
+    return entries().get(aliases.get(key,key))

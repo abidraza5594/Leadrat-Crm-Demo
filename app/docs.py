@@ -194,6 +194,19 @@ async def answer(question):
         return {'grounded':True,'text':reviewed['answer']+' '+cite(reviewed),
                 'sources':ids,'mode':'reviewed_handbook'}
     mode = answer_mode()
+    # These short operational questions have a reviewed screen guide. Generic
+    # term retrieval ("bulk" / "lead") can otherwise return unrelated masters.
+    from .planner import shortcut, romanize, FEATURES
+    direct=shortcut(romanize(question))
+    if direct and direct.feature in {'bulk_upload','bulk_update','site_visit','meeting'}:
+        feature=FEATURES[direct.feature]
+        text=' '.join(feature['facts'])
+        if re.search(r'\b(delete|remove)\b',question,re.I):
+            text=('For bulk deletion, first review the selected leads and your account permissions. '
+                  'I can highlight the selection control on the Leads list. The bulk-delete action itself '
+                  'is not verified in this demo; I will not open a deletion confirmation or delete any records.')
+        return {'grounded':True,'text':text,
+                'sources':[feature['source']],'mode':'reviewed_screen_guide'}
     # The installed handbook describes publishing workflows, not a verified provider list
     # or customer-support timetable. Related keyword hits cannot answer these questions.
     if mode == 'extractive' and (

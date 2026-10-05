@@ -3,6 +3,24 @@
 param([switch]$OpenAI,[switch]$Ollama,[switch]$Login,[switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+# Reuse a running Beacon before installing packages or loading the model again.
+if (Get-NetTCPConnection -LocalPort 8010 -State Listen -ErrorAction SilentlyContinue) {
+    try { $running = Invoke-RestMethod 'http://127.0.0.1:8010/api/health' -TimeoutSec 10 }
+    catch { throw 'Port 8010 is occupied but Beacon is not responding. Check the existing server before restarting.' }
+    if ($running.status -ne 'ok' -or $running.screen_transport -ne 'authenticated_jpeg_polling') {
+        throw 'Port 8010 is being used by another application. No process was stopped.'
+    }
+    if (($OpenAI -and $running.provider -ne 'openai') -or (($Ollama -or $Login) -and $running.provider -ne 'ollama')) {
+        throw 'Beacon is already running with a different provider. Stop its existing server before changing providers.'
+    }
+    if (-not (Get-NetTCPConnection -LocalPort 8011 -State Listen -ErrorAction SilentlyContinue)) {
+        Start-Process -FilePath (Resolve-Path '.venv\Scripts\python.exe') -ArgumentList '-m','http.server','8011','--bind','127.0.0.1' -WorkingDirectory (Join-Path $PSScriptRoot 'web') -WindowStyle Hidden | Out-Null
+    }
+    Write-Host "Beacon is already running. Provider: $($running.provider) | Website: http://localhost:8011"
+    if (-not $running.model_available) { Write-Warning 'The server is running, but its model is not ready yet.' }
+    if (-not $NoBrowser) { Start-Process 'http://localhost:8011' }
+    return
+}
 if (-not (Test-Path '.venv\Scripts\python.exe')) {
     python -m venv .venv
 }

@@ -63,7 +63,8 @@ def test_unknown_request_uses_handbook_not_invention(monkeypatch):
     monkeypatch.setattr(main.docs,'answer',handbook)
     s=main.Session()
     asyncio.run(main.execute(s,'What is the refund policy?'))
-    assert s.messages[-1]['text']==docs.REFUSAL and not s.steps
+    assert any(m['text']==docs.REFUSAL for m in s.messages) and not s.steps
+    assert 'walkthrough is not available' in s.messages[-1]['text']
 
 def test_handbook_answer_survives_a_failed_demo(monkeypatch):
     from app import main

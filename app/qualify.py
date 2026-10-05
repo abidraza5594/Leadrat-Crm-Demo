@@ -106,15 +106,29 @@ def rules_extract(turns):
     """Conservative deterministic extraction; ambiguous or repeated-conflicting values stay unknown."""
     x = {'organisation': {}, 'monthly_leads': {}, 'contact': {}, 'evidence': {}}
     orgs, agents, leads = set(), set(), set()
+    from .conversation_numbers import count_reply
+    pending_count=None
     for t in turns:
-        if t['speaker'] != 'visitor': continue
+        if t['speaker'] != 'visitor':
+            prompt=t['text'].strip()
+            pending_count=('organisation.agents' if prompt=='How many people are on your sales team?' else
+                           'monthly_leads' if prompt=='Roughly how many new leads do you get in a month?' else None)
+            continue
         text = romanize(t['text']).lower(); tid = t['turn_id']
+        count=count_reply(text) if pending_count else None
+        if count is not None:
+            (agents if pending_count=='organisation.agents' else leads).add(count)
+            x['evidence'].setdefault(pending_count,[]).append(tid)
+        pending_count=None
         for kind, pattern in ORG_WORDS:
             if re.search(pattern, text): orgs.add(kind); x['evidence'].setdefault('organisation.type', []).append(tid)
-        for n in re.findall(r'\b(\d{1,4})\s*(?:sales\s*)?(?:agents|people|members|log|brokers|executives)\b', text):
-            agents.add(int(n)); x['evidence'].setdefault('organisation.agents', []).append(tid)
-        for n in re.findall(r'\b(\d{1,5})\s*(?:\+\s*)?(?:new\s*)?leads?\b', text):
-            leads.add(int(n)); x['evidence'].setdefault('monthly_leads', []).append(tid)
+        number=r'(?<![\w.,-])(\d+(?:,\d+)*(?:\.\d+)?\s*(?:k|thousand|lakhs?|lacs?|million|m)?)'
+        for n in re.findall(number+r'\s*(?:sales\s*)?(?:agents|people|members|log|brokers|executives)\b',text):
+            count=count_reply(n)
+            if count is not None:agents.add(count);x['evidence'].setdefault('organisation.agents',[]).append(tid)
+        for n in re.findall(number+r'\s*(?:new\s*)?leads?\b',text):
+            count=count_reply(n)
+            if count is not None:leads.add(count);x['evidence'].setdefault('monthly_leads',[]).append(tid)
         if declined(t['text']): x['next_step'] = 'declined'; x['evidence']['next_step'] = [tid]
         email = re.search(EMAIL, t['text']); phone = re.search(PHONE, t['text'])
         if email: x['contact']['email'] = email.group(0)

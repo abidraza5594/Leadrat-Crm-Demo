@@ -78,6 +78,8 @@ class Session:
     qual_task:asyncio.Task|None=None
     handoff_status:str='not_requested'
     discovery_asked:list=field(default_factory=list)
+    pending_discovery:str|None=None
+    discovery_answers:dict=field(default_factory=dict)
     closed_politely:bool=False
     accepted_turns:dict=field(default_factory=dict)
     def say(self,text,kind=None):
@@ -282,6 +284,20 @@ async def execute(s,message):
             s.steps.append({'title':'Requested CRM change','status':'blocked','detail':'Read-only demo: delete, edit, save, send, upload, export, assign and call are not permitted.'})
             s.say(READ_ONLY)
             return
+        if message.strip().lower().rstrip('.!') in {'repeat','repeat that','say that again','dobara batao'}:
+            previous=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant' and not m.get('kind')),None)
+            s.say(previous or 'Please name the feature you would like me to explain.')
+            return
+        if accept_discovery_reply(s,message):
+            discover(s)
+            return
+        from .conversation_numbers import count_reply
+        if count_reply(message) is not None or re.fullmatch(r'(?:yes|yeah|yep|no|nope|haan|han|nahi|nahin)',message.strip(),re.I):
+            s.say('Please tell me what you mean, or name the feature you would like to see. I will keep the current screen open.')
+            return
+        # An unrelated product request supersedes a pending discovery question.
+        # A later bare number must not silently answer an old question.
+        s.pending_discovery=None
         reply=small_talk(message)
         if reply:
             s.say(reply)
@@ -300,8 +316,7 @@ async def execute(s,message):
         if selected.feature=='unknown':
             # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
             s.say((await (handbook or docs.answer(message)))['text'])
-            if source in {'reviewed_handbook','reviewed_scope'}:
-                s.say('I can explain this from the handbook, but this specific screen walkthrough is not available in the current demo.')
+            s.say('This specific screen walkthrough is not available in the current demo. The live view remains on the previous screen.')
             return
         f=FEATURES[selected.feature];s.last_feature=f['id']
         s.worker.notify=s.say
@@ -317,6 +332,8 @@ async def execute(s,message):
         result=await s.worker.open_module(f)
         step['status']='verified';step['detail']=result
         s.shown.add(f['module'])
+        if f['id'] in {'leads','projects','tasks','properties','dashboard'}:
+            s.say('The '+f['title']+' is open. This shows the workspace; the complete procedure described in the answer has not been demonstrated.')
         if f['id'] not in {'leads','projects','tasks','properties','dashboard'}:
             step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'}
             s.steps.append(step)
@@ -443,20 +460,78 @@ def known(q,path):
     return value not in (None,'unknown',{'min':None,'max':None})
 
 def discover(s):
-    if s.opted_out or len(s.discovery_asked)>=4:return
+    if s.opted_out or s.pending_discovery or len(s.discovery_asked)>=4:return
     q=(s.qual or {}).get('qualification') or rules_extract(transcript_of(s.messages)).model_dump()
     for path,question in DISCOVERY:
-        if path not in s.discovery_asked and not known(q,path):
-            s.discovery_asked.append(path);s.say(question);return
+        if path not in s.discovery_asked and path not in s.discovery_answers and not known(q,path):
+            s.discovery_asked.append(path);s.pending_discovery=path;s.say(question);return
     if not q.get('consent') and 'consent' not in s.discovery_asked and len(s.discovery_asked)<4:
         s.discovery_asked.append('consent')
+        s.pending_discovery='consent'
         s.say('Would you like someone from Leadrat to contact you? If yes, share an email or phone number.')
+
+def accept_discovery_reply(s,message):
+    """Consume a reply to our own question before any product navigation.
+
+    Keep the original transcript for customer extraction. These local values only
+    guide the conversation; they are not a substitute for sales qualification.
+    """
+    pending=s.pending_discovery
+    if QUESTION.search(message):return False
+    text=message.strip().lower().rstrip('.!')
+    from .conversation_numbers import count_reply
+    correction=re.fullmatch(r'(?:actually|correction|sorry|actually we have)[, ]+(.+?)\s+(agents|people|team members|leads per month|monthly leads)',text)
+    if correction:
+        count=count_reply(correction[1])
+        if count is not None:
+            path='monthly_leads' if 'leads' in correction[2] else 'organisation.agents'
+            s.discovery_answers[path]=count
+            s.say(f'Thanks for correcting that: {count:,} '+('new leads per month.' if path=='monthly_leads' else 'people on your sales team.'))
+            if pending==path:s.pending_discovery=None
+            elif pending in dict(DISCOVERY):s.say(dict(DISCOVERY)[pending])
+            return True
+    if not pending:return False
+    # Skips and uncertainty answer the discovery turn, not the feature planner.
+    if text in {'skip','skip this','not sure','dont know',"don't know",'pata nahi','later','prefer not to say'}:
+        s.pending_discovery=None
+        s.say('No problem, we can leave that detail unknown. The current demo stays open.')
+        return True
+    # An acknowledgement is not an answer to a count or business-type question.
+    if pending!='consent' and text in {'yes','yeah','yep','no','nope','haan','han','nahi','nahin','ok','okay'}:
+        question=dict(DISCOVERY).get(pending,'Could you share a little more detail?')
+        s.say(question+' You can also say skip.')
+        return True
+    value=None;reply=None
+    if pending=='organisation.type':
+        match=re.fullmatch(r"(?:(?:i am|i'm|we are|we're|main|hum) (?:(?:a|an) )?)?(channel partners?|brokerage|brokers?|developers?|builders?)(?: (?:hu|hoon|hai|hain))?",text)
+        if match:value=match[1];reply=f'Thanks — you are a {value}.'
+    elif pending in {'organisation.agents','monthly_leads'}:
+        from .conversation_numbers import count_reply
+        value=count_reply(text)
+        if value is not None:
+            reply=(f'Got it — {value:,} people on your sales team.' if pending=='organisation.agents' else f'Got it — approximately {value:,} new leads per month.')
+        elif re.fullmatch(r'[\d\s.,+\-/]+[a-z ]*',text):
+            s.say('Please give one approximate count, for example 20k or 20,000. I will keep the current demo screen open.')
+            return True
+    elif pending in {'pain_points','process','influence'}:
+        from .planner import shortcut,romanize
+        if not re.search(r'\b(show|open|demo|schedule|explain|dikhao|kholo)\b',text) and not shortcut(romanize(text)):
+            value=message.strip();reply='Thanks, I have noted that.'
+    elif pending=='consent':
+        if text in {'yes','yeah','haan','han','yes please'}:
+            value=True;reply='You would like a follow-up. Please share the email or phone number the team should use.'
+        elif text in {'no','nope','nahi','nahin','no thanks'}:
+            value=False;s.opted_out=True;reply='Understood. I will not request contact details or arrange a follow-up.'
+    if value is None:return False
+    s.discovery_answers[pending]=value;s.pending_discovery=None
+    s.say(reply+' I will keep the current demo screen open.')
+    return True
 
 async def requalify(s):
     result=await qualify_session(list(s.messages))
     if s.id not in sessions:return
     s.qual=result;q=result['qualification']
-    if handoffs.eligible(q) and s.handoff_status=='not_requested':
+    if not s.opted_out and handoffs.eligible(q) and s.handoff_status=='not_requested':
         s.handoff_status='pending'
         s.handoff_status=await handoffs.deliver(handoffs.brief(s.id,q,s.shown))
         s.say('Thank you. I have shared your details with the Leadrat team, and someone will contact you soon.' if s.handoff_status=='delivered'

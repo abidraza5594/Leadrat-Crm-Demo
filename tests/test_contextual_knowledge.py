@@ -93,7 +93,7 @@ def test_verifier_outage_does_not_publish_unchecked_draft():
     result=asyncio.run(knowledge(complete).answer('A question',Decision(kind='product'),{}))
     assert not result['grounded'] and result['error']=='TimeoutError'
 
-def test_support_playbook_is_used_only_when_the_visitor_reports_a_problem():
+def test_support_playbook_is_used_only_when_the_model_judges_a_reported_problem():
     playbook={'id':7,'module':'Inventory','section':'Troubleshooting matrix','text':'Check permissions before concluding units are missing.','page':4}
     seen=[]
     async def complete(messages,schema,**kw):
@@ -104,6 +104,6 @@ def test_support_playbook_is_used_only_when_the_visitor_reports_a_problem():
     async def retrieve(*args,**kwargs):return [(0.9,playbook),(0.8,k.documents[0])]
     k.retrieve=retrieve
     asyncio.run(k.answer('What does inventory do?',Decision(kind='product'),{}))
-    asyncio.run(k.answer('Why are units not showing in inventory?',Decision(kind='product'),{}))
+    asyncio.run(k.answer('Why are units not showing in inventory?',Decision(kind='product',problem=True),{}))
     assert 'doc:7' not in seen[0] and 'doc:1' in seen[0]
     assert 'doc:7' in seen[1]

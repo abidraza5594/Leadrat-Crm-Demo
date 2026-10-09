@@ -42,8 +42,7 @@ def test_context_contains_pending_question_history_offer_and_facts(monkeypatch):
 
 @pytest.mark.parametrize('pending,message,field,value',[
     ('monthly_leads','10000','monthly_leads',10000),('organisation.agents','600','organisation.agents',600),
-    ('organisation.type','i am developer','organisation.type','developer'),
-    ('organisation.type','we are a channel partner','organisation.type','channel_partner')])
+    ('monthly_leads','10k','monthly_leads',10000),('consent','9999999999','contact',True),('contact','mail me at a.b@example.com','contact',True)])
 def test_plain_answer_to_pending_question_needs_no_model_call(monkeypatch,pending,message,field,value):
     async def complete(*args,**kwargs):raise AssertionError('A plain answer must not wait for the model')
     monkeypatch.setattr(main.engine,'completion',complete)
@@ -55,10 +54,11 @@ def test_plain_answer_to_pending_question_needs_no_model_call(monkeypatch,pendin
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('message',['how do developers use leads?','not a developer'])
-def test_questions_and_negations_still_go_to_the_model(monkeypatch,message):
+@pytest.mark.parametrize('pending,message',[('organisation.type','i am developer'),('organisation.type','devloper hu'),
+    ('monthly_leads','around 10k, maybe more'),('organisation.agents','how many do you support?')])
+def test_words_are_understood_by_the_model_not_by_rules(pending,message):
     from app.conversation_engine import direct_answer
-    assert direct_answer({'pending_question':'organisation.type','message':message}) is None
+    assert direct_answer({'pending_question':pending,'message':message}) is None
 
 
 @pytest.mark.parametrize('raw',[

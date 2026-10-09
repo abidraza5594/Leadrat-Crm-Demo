@@ -30,7 +30,6 @@ CHECK_SYSTEM='''Check a proposed product answer against the supplied source refe
 
 SUPPORT_SECTIONS=frozenset({'Troubleshooting matrix','FLOE response guidance','FLOE pre-escalation checklist',
     'Content governance for future FLOE updates','Standard answer pattern'})
-PROBLEM=re.compile(r"\b(not|n't|nahi|nahin|nhi|missing|error|issue|problem|unable|cannot|wrong|fail\w*|stuck|why|kyu|kyun|kyon|dikh nahi)\b|n't\b",re.I)
 
 class SemanticKnowledge:
     def __init__(self,store=None,project='leadrat',directory=None,completion=None):
@@ -96,7 +95,7 @@ class SemanticKnowledge:
         query=(question+'\n'+context).strip()
         # Support playbooks are written for agents diagnosing a fault. A prospect asking what the
         # product does should hear about the product, not "check permissions before concluding".
-        exclude=frozenset() if PROBLEM.search(question) else SUPPORT_SECTIONS
+        exclude=frozenset() if decision.problem else SUPPORT_SECTIONS
         def relevant(hits):return [h for h in hits if h[1].get('section') not in exclude][:4]
         global_hits=relevant(await self.retrieve(question,k=12))
         context_hits=relevant(await self.retrieve(query,decision.topic if decision.topic!='unknown' else None,k=12))

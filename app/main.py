@@ -100,6 +100,8 @@ class Session:
     discovery_misses:dict=field(default_factory=dict)
     acknowledged:bool=False
     qual_dirty:bool=False
+    # The visitor said they were finished; a repeated "nothing" gets a short reply, not the goodbye again.
+    finished:bool=False
     def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
@@ -398,7 +400,16 @@ async def execute(s,message):
             s.customer_revision+=1
             needs_qualification=True
             s.say('Understood. I will not request contact details or arrange a follow-up.');return
-        if d.kind=='stop':s.say('The walkthrough has stopped.');return
+        if d.kind in {'stop','done'}:
+            # A running demo was already interrupted by this message; what remains is the visitor saying
+            # they are finished. No further questions or offers until they ask something new.
+            s.offer=None;s.pending_discovery=None
+            if s.finished:s.say('Sure. I am here if you need anything else.');return
+            s.finished=True
+            contacted=s.discovery_answers.get('consent') is True and s.discovery_answers.get('contact') and not s.opted_out
+            s.say('Thank you for exploring Leadrat. '+('The team will contact you on the details you shared. ' if contacted else '')
+                  +'You can close this window now, or ask me anything else whenever you like.');return
+        s.finished=False
         if d.kind=='repeat':
             previous=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant' and not m.get('kind')),None)
             s.say(previous or 'What would you like me to explain?');return
@@ -418,6 +429,11 @@ async def execute(s,message):
                 s.fact_evidence[u.field]={'quote':u.evidence,'message_id':s.messages[-1]['id'] if s.messages else None}
                 if u.field==pending:s.pending_discovery=None
                 if u.field=='consent' and u.value is False:s.opted_out=True
+            if pending=='consent' and any(u.field=='contact' for u in d.updates) and 'consent' not in s.discovery_answers:
+                # We asked "Would you like someone to contact you? If yes, share an email or phone number";
+                # sharing one in reply is that yes.
+                s.discovery_answers['consent']=True
+                s.fact_evidence['consent']=s.fact_evidence['contact']
             needs_qualification=bool(d.updates)
             if d.updates:s.customer_revision+=1
             if d.skip:s.pending_discovery=None
@@ -432,7 +448,7 @@ async def execute(s,message):
                     if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value)+'.')
                     elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {u.value:,} people on your sales team.')
                     elif u.field=='monthly_leads':acknowledgements.append(f'Got it — approximately {u.value:,} new leads per month.')
-                    elif u.field=='process':acknowledgements.append(process_ack(u.value))
+                    elif u.field in TEXT_FACTS:acknowledgements.append(restated(u))
                 s.say(' '.join(acknowledgements) or ('No problem, we can skip that.' if d.skip else 'Thanks, I have noted that.'),kind='customer_ack')
             if s.pending_discovery not in {None,'contact','consent'} and s.discovery_misses.get(s.pending_discovery):
                 # Already asked twice: move on instead of repeating the same question.
@@ -451,10 +467,15 @@ async def execute(s,message):
         s.offer=None
         answer=outcome['answer'];s.say(answer['text'],kind='product_answer')
         if d.feature=='unknown':
-            if d.demo and answer.get('demo_requested'):s.say('I can explain this, but its screen walkthrough is not available here.',kind='product_answer')
-            return
+            # Routing missed (for example an unusual spelling), yet the answer is grounded in one module:
+            # show that module's screen instead of leaving the live view where it was.
+            grounded=workspace_for(answer) if d.demo and answer.get('grounded') else None
+            if not grounded:
+                if d.demo and answer.get('demo_requested'):s.say('I can explain this, but its screen walkthrough is not available here.',kind='product_answer')
+                next_question(s);return
+            d=d.model_copy(update={'feature':grounded,'topic':FEATURES[grounded]['knowledge_topics'][0]});s.last_decision=d.model_dump()
         f=FEATURES[d.feature];s.last_feature=d.feature
-        if not d.demo:return
+        if not d.demo:next_question(s);return
         s.worker.notify=s.say
         if not demo:on_decision(d.model_dump())
         step,opening=demo;demo=None
@@ -474,11 +495,7 @@ async def execute(s,message):
             lead_turn=True
             from .lead_creation import begin
             await begin(s);return
-        if s.pending_discovery:
-            question=discovery_question(s,s.pending_discovery)
-            if question:s.say('And to continue: '+question)
-        else:discover(s)
-        if not s.pending_discovery:follow_up(s)
+        next_question(s)
     except asyncio.CancelledError:
         for step in s.steps:
             if step['status']=='running':step['status']='stopped';step['detail']='Stopped by the visitor.'
@@ -616,26 +633,14 @@ DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a deve
     ('next_step','When would you want a new CRM running: within the next month, or later?')]
 
 TEXT_FACTS={'pain_points','process','influence','next_step'}
-NO_TOOL=re.compile(r"\b(not using|not use|don'?t use|do not use|no (?:tool|tools|software|crm|system)|nothing|none|manual(?:ly)?|pen and paper|notebook|diary|register)\b",re.I)
-TOOLS=[(r'excels?|spreadsheets?|xls',"Excel"),(r'google sheets?|sheets?','Google Sheets'),(r'whats ?app','WhatsApp'),
-    (r'salesforce','Salesforce'),(r'zoho','Zoho'),(r'hubspot','HubSpot'),(r'sell\.?do','Sell.Do'),(r'crm','a CRM')]
-
-def tool_names(text):
-    names=[name for pattern,name in TOOLS if re.search(r'\b(?:'+pattern+r')\b',str(text),re.I)]
-    return ' and '.join(dict.fromkeys(names))
-
-def process_ack(value):
-    if NO_TOOL.search(str(value)):return 'Understood — no dedicated lead tool today.'
-    names=tool_names(value)
-    return f'Got it — you manage leads with {names} today.' if names else 'Got it, I have noted how you manage leads today.'
-
 def discovery_question(s,path):
-    question=dict(DISCOVERY).get(path)
-    tool=s.discovery_answers.get('process')
-    if path=='pain_points' and tool:
-        if NO_TOOL.search(str(tool)):question='What is the biggest problem with handling leads that way: missed follow-ups, slow responses, or something else?'
-        elif tool_names(tool):question=f'What is the biggest problem you face managing leads in {tool_names(tool)}?'
-    return question
+    return dict(DISCOVERY).get(path)
+
+def restated(update):
+    """Acknowledge a free-text answer in the model's words, whatever the visitor's spelling."""
+    summary=' '.join(update.summary.split()).rstrip('.')
+    if summary.casefold().startswith('you ') and len(summary)<=110:return 'Got it — '+summary+'.'
+    return 'Got it, I have noted that.'
 
 def answer_pending(s,pending,message,d):
     """A reply to our open text question is kept as its answer instead of being re-asked in a loop.
@@ -643,8 +648,14 @@ def answer_pending(s,pending,message,d):
     The first reply that does not answer the open question is handled normally and the question
     is asked once more; the next reply is taken as the visitor's answer to it."""
     updates=list(d.updates)
+    if pending in TEXT_FACTS and not any(u.field==pending for u in updates):
+        # A text answer for a question we have not asked yet cannot be a correction: it answers this one.
+        updates=[u.model_copy(update={'field':pending}) if u.field in TEXT_FACTS and u.field not in s.discovery_asked else u for u in updates]
     if pending not in TEXT_FACTS or d.skip or any(u.field==pending for u in updates):return updates
-    if not s.discovery_misses.get(pending):return updates
+    # The model judged this message to be the visitor's answer; with nothing extracted, their own
+    # words answer the open question. A reply about another subject is applied, and the open
+    # question asked once more before the next reply is taken as its answer.
+    if updates and not s.discovery_misses.get(pending):return updates
     from .conversation_engine import TextUpdate
     text=message.strip()[:500]
     return [u for u in updates if u.field not in TEXT_FACTS]+[TextUpdate(field=pending,value=text,evidence=text)]
@@ -660,6 +671,24 @@ NEXT_STEPS={'leads':['add_lead','status','site_visit'],'add_lead':['status','sit
     'site_visit':['notes','projects'],'meeting':['notes','tasks'],'projects':['properties','leads'],'properties':['matching','projects'],
     'tasks':['dashboard','leads'],'dashboard':['leads','tasks']}
 DEFAULT_STEPS=['leads','add_lead','status','site_visit','projects','tasks','dashboard']
+
+NOT_MODULES={None,'unknown','Handbook scope','Handbook guidance','Handbook overview'}
+
+def workspace_for(answer):
+    """The screen of the single handbook module an answer's evidence comes from, if it has one."""
+    modules={source.get('module') for source in answer.get('sources',[])}-NOT_MODULES
+    if len(modules)!=1:return None
+    topic=modules.pop()
+    return next((key for key,f in FEATURES.items() if f['workspace'] and f['knowledge_topics'][0]==topic),None)
+
+def next_question(s):
+    """Every product answer ends by moving the conversation on: the open business question, else the
+    next one, else a concrete next demo the visitor can accept with a plain yes."""
+    if s.pending_discovery:
+        question=discovery_question(s,s.pending_discovery)
+        if question:s.say('And to continue: '+question)
+    else:discover(s)
+    if not s.pending_discovery:follow_up(s)
 
 def follow_up(s):
     """Close the turn with one concrete next step the visitor can accept with a plain yes."""

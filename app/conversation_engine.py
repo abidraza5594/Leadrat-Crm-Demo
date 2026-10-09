@@ -76,6 +76,7 @@ class TurnState(TypedDict,total=False):
     last_feature:str|None
     last_offer:str|None
     decision:dict
+    location:dict|None
     answer:dict
     error:str|None
 
@@ -142,7 +143,9 @@ def product_contract(features, topics, knowledge):
     # The handbook's cover and support-agent guidance are not product modules a visitor can ask about.
     virtual={'knowledge:'+topic:topic for topic in topics if topic not in {
         t for f in features.values() for t in f['knowledge_topics']} and topic not in {'Handbook overview','Handbook guidance'}}
-    catalogue.update({key:knowledge.topic_description(topic)+' (explanation only; no demo screen)' for key,topic in virtual.items()})
+    catalogue.update({key:knowledge.topic_description(topic)+' (explanation; its screen is found from the CRM map)' for key,topic in virtual.items()})
+    # Every other page or section of the CRM: located afterwards from the map generated out of the CRM code.
+    catalogue['screen']='Any other CRM page, settings area or section of a page that none of the other entries covers.'
     schema={'type':'object','properties':{
         'feature':{'type':'string','enum':['unknown',*catalogue]},
         'no_demo_quote':{'type':'string'},'problem':{'type':'boolean'}},'required':['feature','no_demo_quote','problem'],'additionalProperties':False}
@@ -230,16 +233,18 @@ def validate_decision(raw,state,features,topics):
 
 
 class ConversationEngine:
-    def __init__(self,features,topics,knowledge,store=None,project='leadrat',completion=None):
-        self.features=features;self.topics=topics;self.knowledge=knowledge
+    def __init__(self,features,topics,knowledge,store=None,project='leadrat',completion=None,screens=None):
+        self.features=features;self.topics=topics;self.knowledge=knowledge;self.screens=screens
+        if screens is not None:screens.include(features)
         self.store=store;self.project=project;self.completion=completion or local_model.complete
         graph=StateGraph(TurnState)
         graph.add_node('load_context',self.context)
         graph.add_node('understand',self.understand)
+        graph.add_node('locate',self.locate)
         graph.add_node('ground_answer',self.ground)
         graph.add_node('save_decision',self.save)
         graph.add_edge(START,'load_context');graph.add_edge('load_context','understand')
-        graph.add_edge('understand','ground_answer');graph.add_edge('ground_answer','save_decision')
+        graph.add_edge('understand','locate');graph.add_edge('locate','ground_answer');graph.add_edge('ground_answer','save_decision')
         graph.add_edge('save_decision',END)
         self.graph=graph.compile()
 
@@ -250,11 +255,30 @@ class ConversationEngine:
         saved=await self.store.load(self.project,state['session_id'])
         return {k:saved[k] for k in ('customer','history','last_feature','pending_question','last_offer') if k not in state and k in saved}
 
-    async def understand(self,state,config=None):
+    async def understand(self,state):
+        return await self.classify(state)
+
+    async def locate(self,state,config=None):
+        """Choose what to show: a prepared walkthrough or any page or section from the CRM's screen map."""
         on_decision=((config or {}).get('configurable') or {}).get('on_decision')
-        decision=await self.classify(state)
-        if on_decision:on_decision(decision['decision'])
-        return decision
+        decision=state['decision'];location=None
+        d=Decision.model_validate(decision)
+        if d.kind=='product' and d.demo and self.screens is not None:
+            try:
+                encoder=getattr(self.knowledge,'model',None)
+                await self.screens.prepare(encoder)
+                chosen=await self.screens.choose(self.completion,encoder,state['message'],state.get('history',[]),
+                    preferred=d.feature if d.feature in self.features else None)
+                if chosen and chosen.get('walkthrough'):
+                    key=chosen['walkthrough']
+                    d=d.model_copy(update={'feature':key,'topic':self.features[key]['knowledge_topics'][0]})
+                elif chosen:
+                    location=chosen;d=d.model_copy(update={'feature':'unknown','topic':d.topic if d.feature not in self.features else 'unknown'})
+                decision=d.model_dump()
+            except Exception as exc:
+                import logging;logging.getLogger(__name__).warning('Screen location failed: %s',type(exc).__name__)
+        if on_decision:on_decision(decision,location)
+        return {'decision':decision,'location':location}
 
     async def classify(self,state):
         try:
@@ -283,6 +307,7 @@ class ConversationEngine:
                 product['demo']=not bool(quote)
                 if product['feature'] in virtual:
                     product['topic']=virtual[product['feature']];product['feature']='unknown'
+                elif product['feature']=='screen':product['feature']='unknown'
                 raw.update(product)
             if raw.get('kind')=='chat':raw['reply']='You are welcome. What else would you like to explore?' if label=='THANKS' else 'Hello! What would you like to explore?'
             elif raw.get('kind')=='clarify':raw['reply']='Could you clarify what you would like to know?'
@@ -302,7 +327,7 @@ class ConversationEngine:
     async def ground(self,state):
         d=Decision.model_validate(state['decision'])
         if d.kind!='product':return {'answer':{}}
-        return {'answer':await self.knowledge.answer(state['message'],d,self.features,
+        return {'answer':await self.knowledge.answer(state['message'],d,self.features,location=state.get('location'),
             history=state.get('history',[]),customer=state.get('customer',{}))}
 
     async def save(self,state):

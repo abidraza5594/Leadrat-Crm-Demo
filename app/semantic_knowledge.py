@@ -83,7 +83,7 @@ class SemanticKnowledge:
                     'text':d['text'].split('Primary users')[0].strip(),'page':d['page']}
         return list(result.values())
 
-    async def answer(self,question,decision,features,*,history=None,customer=None):
+    async def answer(self,question,decision,features,*,history=None,customer=None,location=None):
         from .local_model import complete
         if not self.ready:await self.warm()
         history=(history or [])[-6:]
@@ -115,6 +115,11 @@ class SemanticKnowledge:
             references['capability:'+decision.feature]={'id':'capability:'+decision.feature,
                 'module':decision.topic,'text':' '.join(f['facts']),
                 'source':f['source'],'note':'Supported walkthrough facts, not a claim that an action has run.'}
+        if location:
+            # What the CRM itself shows on the page being opened, read from its code.
+            references['screen:'+location['id']]={'id':'screen:'+location['id'],'module':location['page'],
+                'text':'The CRM screen '+location['page']+(' (section '+location['section']+')' if location.get('section') else '')
+                       +' shows: '+location['text'].split(': ',1)[-1][:600]}
         # The model selects source sentences by ID. It never has to retype a
         # quotation, so harmless copying differences cannot block a good answer.
         import re

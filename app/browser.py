@@ -201,40 +201,81 @@ class BrowserWorker:
         # caret='initial' avoids injecting a hide-caret stylesheet into the CRM on every frame.
         return await self.page.screenshot(type='jpeg',quality=70,timeout=5000,caret='initial',animations='allow')
 
+    async def leave_screen(self):
+        """Close reviewed demo dialogs before changing screens; never touch an operator's unsaved input."""
+        page=self.page
+        await self.check_popups()
+        # Never leave an operator-entered dirty form or dismiss its confirmation.
+        own_changes=self.demo_form_signature is not None and self.demo_form_signature==await self.form_signature()
+        if await page.locator('form.ng-dirty').count() and not own_changes:raise DemoError('An unsaved form contains input outside this walkthrough. I kept it intact; close it before starting another demo.')
+        # Close only reviewed, unchanged demo dialogs before changing screens.
+        for selector in ['leads-template-share .ic-close-secondary','leads-email-share .ic-close-secondary','leads-advance-filter .ic-close-secondary']:
+            controls=page.locator(selector)
+            if await controls.count()==1 and await controls.is_visible():await controls.click()
+        # This CRM version exposes Cancel on the advanced-filter sheet rather
+        # than the older close icon. Leaving the sheet open blocks navigation.
+        filters=page.locator('leads-advance-filter')
+        if await filters.count()==1 and await filters.is_visible():
+            cancel=filters.get_by_text(re.compile(r'^\s*Cancel\s*$',re.I))
+            if await cancel.count()==1 and await cancel.is_visible():await cancel.click()
+        no_email=page.locator('.modal-content').filter(has_text='There is no email ID associated with')
+        if await no_email.count()==1:
+            cancel=no_email.get_by_text(re.compile(r'^\s*Cancel\s*$'))
+            if await cancel.count()==1:await cancel.click()
+        preview=page.locator('lead-preview')
+        if await preview.count():
+            back=preview.locator('.ic-circle-chevron-left').first
+            if await back.is_visible():await back.click()
+        if own_changes:
+            discard=page.locator('save-changes').get_by_role('button',name=re.compile(r'^Discard$',re.I))
+            if await discard.count()==1 and await discard.is_visible():await discard.click()
+        await self.check_popups()
+        return own_changes
+
+    async def open_location(self,location):
+        """Open a page from the screen map generated out of the CRM code and highlight the chosen section."""
+        if not config.SANDBOX_CONFIRMED:raise DemoError('A test-data sandbox must be configured before showing CRM screens.')
+        if not await self.signed_in():raise DemoError("The demo browser is not signed in to the test CRM yet, so I can't show this screen.")
+        path=location['path']
+        if not path.startswith('/') or '://' in path:raise DemoError('That screen location is not valid.')
+        async with self.lock:
+            await self.leave_screen()
+            page=self.page
+            if urlsplit(page.url).path.rstrip('/')!=path.rstrip('/'):
+                # In-app navigation through the CRM's own router, the same as following one of its links.
+                await page.evaluate("p=>{history.pushState(null,'',p);dispatchEvent(new PopStateEvent('popstate',{state:null}))}",path)
+                # The address changes at once; let the router render and apply its guards before checking it.
+                try:await page.wait_for_load_state('networkidle',timeout=6000)
+                except Exception:pass
+                if urlsplit(page.url).path.rstrip('/')!=path.rstrip('/'):
+                    await page.goto(config.CRM_ORIGIN+path,wait_until='domcontentloaded',timeout=30000)
+                    await self.settle()
+                if urlsplit(page.url).path.rstrip('/')!=path.rstrip('/'):
+                    raise DemoError(location['page']+' is not available for this account, so the CRM opened another page.')
+            if await page.get_by_text(re.compile('access denied|not authorized',re.I)).count():raise DemoError('The CRM denied access to this screen.')
+            if not await self.signed_in():raise DemoError('The CRM session expired. The demo stopped.')
+            self.demo_form_signature=None
+            section=location.get('section')
+            if not section:return location['page']+' is open.'
+            target=page.get_by_text(section,exact=True)
+            try:await target.first.wait_for(state='visible',timeout=6000)
+            except Exception:return location['page']+' is open. Its "'+section+'" section is not shown for this account.'
+            for i in range(await target.count()):
+                element=target.nth(i)
+                if await element.is_visible():
+                    await element.scroll_into_view_if_needed()
+                    await element.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
+                    break
+            return location['page']+' is open and its "'+section+'" section is highlighted.'
+
     async def open_module(self,feature):
         if not config.SANDBOX_CONFIRMED:raise DemoError('A test-data sandbox must be configured before showing CRM screens.')
         if not await self.signed_in():raise DemoError("The demo browser is not signed in to the test CRM yet, so I can't show this screen.")
         module=feature['module']
-        # The sidebar label as rendered by the CRM (src/app/layout/left-nav); module is its route prefix.
-        label=feature.get('nav_label') or {'task':'Tasks','properties':'Properties'}.get(module,module.title())
+        label={'task':'Tasks','properties':'Properties'}.get(module,module.title())
         async with self.lock:
             page=self.page
-            await self.check_popups()
-            # Never leave an operator-entered dirty form or dismiss its confirmation.
-            own_changes=self.demo_form_signature is not None and self.demo_form_signature==await self.form_signature()
-            if await page.locator('form.ng-dirty').count() and not own_changes:raise DemoError('An unsaved form contains input outside this walkthrough. I kept it intact; close it before starting another demo.')
-            # Close only reviewed, unchanged demo dialogs before changing screens.
-            for selector in ['leads-template-share .ic-close-secondary','leads-email-share .ic-close-secondary','leads-advance-filter .ic-close-secondary']:
-                controls=page.locator(selector)
-                if await controls.count()==1 and await controls.is_visible():await controls.click()
-            # This CRM version exposes Cancel on the advanced-filter sheet rather
-            # than the older close icon. Leaving the sheet open blocks navigation.
-            filters=page.locator('leads-advance-filter')
-            if await filters.count()==1 and await filters.is_visible():
-                cancel=filters.get_by_text(re.compile(r'^\s*Cancel\s*$',re.I))
-                if await cancel.count()==1 and await cancel.is_visible():await cancel.click()
-            no_email=page.locator('.modal-content').filter(has_text='There is no email ID associated with')
-            if await no_email.count()==1:
-                cancel=no_email.get_by_text(re.compile(r'^\s*Cancel\s*$'))
-                if await cancel.count()==1:await cancel.click()
-            preview=page.locator('lead-preview')
-            if await preview.count():
-                back=preview.locator('.ic-circle-chevron-left').first
-                if await back.is_visible():await back.click()
-            if own_changes:
-                discard=page.locator('save-changes').get_by_role('button',name=re.compile(r'^Discard$',re.I))
-                if await discard.count()==1 and await discard.is_visible():await discard.click()
-            await self.check_popups()
+            own_changes=await self.leave_screen()
             if module=='leads' and urlsplit(page.url).path.rstrip('/')=='/leads/manage-leads':
                 listing=page.locator('manage-leads')
                 if await listing.count()==1 and await listing.is_visible():

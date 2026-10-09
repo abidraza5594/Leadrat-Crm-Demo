@@ -19,6 +19,7 @@ from .project import PROJECT
 from .conversation_engine import ConversationEngine, Decision
 from .conversation_store import ConversationStore
 from .semantic_knowledge import SemanticKnowledge
+from .screens import Screens
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
@@ -131,7 +132,8 @@ background:set[asyncio.Task]=set()
 browser_pool=WarmBrowser()
 conversation_store=None
 knowledge=SemanticKnowledge(project=PROJECT['id'],directory=PROJECT['knowledge_dir'])
-engine=ConversationEngine(FEATURES,[],knowledge,project=PROJECT['id'])
+screens=Screens()
+engine=ConversationEngine(FEATURES,[],knowledge,project=PROJECT['id'],screens=screens)
 
 def spawn(coroutine):
     # asyncio keeps only weak references to tasks; hold fire-and-forget work until it finishes.
@@ -164,7 +166,9 @@ async def lifespan(app):
     handoffs.prune()  # retention: drop handoff records older than HANDOFF_RETENTION_DAYS
     tasks=[asyncio.create_task(cleanup()),asyncio.create_task(warm_up())]
     async def warm_search():
-        try:await knowledge.warm()
+        try:
+            await knowledge.warm()
+            await screens.prepare(knowledge.model)
         except Exception as exc:print('Semantic knowledge preparation failed:',type(exc).__name__,flush=True)
     # Loading the search model takes ~9 s; do it at start-up, not during the first visitor question.
     if os.getenv('BEACON_WARM_KNOWLEDGE','1')=='1':tasks.append(asyncio.create_task(warm_search()))
@@ -381,12 +385,17 @@ async def execute(s,message):
                 await asyncio.sleep(ACK_AFTER)
                 if len(s.messages)==count:s.acknowledged=True;s.say(ACKS['question'],kind='ack')
             ack=asyncio.create_task(acknowledge())
-        def on_decision(decision):
+        def on_decision(decision,location=None):
             # Open the requested screen while the answer is still being written,
             # so the live view changes within seconds instead of after the text.
             nonlocal demo
             d=Decision.model_validate(decision)
-            if d.kind!='product' or not d.demo or d.feature not in FEATURES:return
+            if d.kind!='product' or not d.demo:return
+            if location:
+                step={'title':location['page'],'status':'running','detail':'Opening the CRM screen for this question.'};s.steps.append(step)
+                demo=(step,asyncio.create_task(s.worker.open_location(location)))
+                return
+            if d.feature not in FEATURES:return
             f=FEATURES[d.feature]
             step={'title':f['title'],'status':'running','detail':'Opening the requested CRM screen.'};s.steps.append(step)
             demo=(step,asyncio.create_task(s.worker.open_module(f)))
@@ -467,13 +476,16 @@ async def execute(s,message):
         s.offer=None
         answer=outcome['answer'];s.say(answer['text'],kind='product_answer')
         if d.feature=='unknown':
-            # Routing missed (for example an unusual spelling), yet the answer is grounded in one module:
-            # show that module's screen instead of leaving the live view where it was.
-            grounded=workspace_for(answer) if d.demo and answer.get('grounded') else None
-            if not grounded:
-                if d.demo and answer.get('demo_requested'):s.say('I can explain this, but its screen walkthrough is not available here.',kind='product_answer')
-                next_question(s);return
-            d=d.model_copy(update={'feature':grounded,'topic':FEATURES[grounded]['knowledge_topics'][0]});s.last_decision=d.model_dump()
+            location=outcome.get('location')
+            if location and demo:
+                # A page or section located from the CRM's own screen map.
+                step,opening=demo;demo=None
+                result=await opening
+                step['status']='verified';step['detail']=result;s.shown.add(location['page'])
+                s.say(result,kind='product_answer')
+            elif d.demo and answer.get('demo_requested'):
+                s.say('I can explain this, but I could not find a matching screen in this CRM to show.',kind='product_answer')
+            next_question(s);return
         f=FEATURES[d.feature];s.last_feature=d.feature
         if not d.demo:next_question(s);return
         s.worker.notify=s.say
@@ -671,15 +683,6 @@ NEXT_STEPS={'leads':['add_lead','status','site_visit'],'add_lead':['status','sit
     'site_visit':['notes','projects'],'meeting':['notes','tasks'],'projects':['properties','leads'],'properties':['matching','projects'],
     'tasks':['dashboard','leads'],'dashboard':['leads','tasks']}
 DEFAULT_STEPS=['leads','add_lead','status','site_visit','projects','tasks','dashboard']
-
-NOT_MODULES={None,'unknown','Handbook scope','Handbook guidance','Handbook overview'}
-
-def workspace_for(answer):
-    """The screen of the single handbook module an answer's evidence comes from, if it has one."""
-    modules={source.get('module') for source in answer.get('sources',[])}-NOT_MODULES
-    if len(modules)!=1:return None
-    topic=modules.pop()
-    return next((key for key,f in FEATURES.items() if f['workspace'] and f['knowledge_topics'][0]==topic),None)
 
 def next_question(s):
     """Every product answer ends by moving the conversation on: the open business question, else the

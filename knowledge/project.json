@@ -2,29 +2,17 @@
   "id": "leadrat",
   "adapter": "leadrat",
   "features_file": "features.json",
-  "workspace_features": ["leads", "projects", "properties", "tasks", "dashboard", "global_config", "data", "attendance", "team", "org_profile", "leadrat_ai"],
+  "workspace_features": ["leads", "projects", "properties", "tasks", "dashboard"],
   "module_topics": {
     "leads": ["Lead Management"],
     "projects": ["Project"],
     "properties": ["Properties"],
     "task": ["Task"],
-    "dashboard": ["Dashboard"],
-    "global-config": ["Global Config"],
-    "data": ["Data Management"],
-    "attendance": ["Attendance"],
-    "teams": ["Team - Users & Teams"],
-    "profile": ["Org Profile"],
-    "leadrat-ai": ["Leadrat AI - MCP Introduction Page"]
+    "dashboard": ["Dashboard"]
   },
   "descriptions": {
     "leads": "How to manage leads in the CRM. General lead management, enquiries, sales pipeline and the leads list.",
     "bulk_upload": "Import active leads into the Leads module. This is separate from raw prospect datasets in the Data Management module.",
-    "add_lead": "Show how to add one new enquiry; collect required details and request confirmation before creating a lead.",
-    "global_config": "Global Config: tenant-wide masters and settings such as lead statuses, sources, custom fields and reasons.",
-    "data": "Data Management: bulk prospect data import, mapping, segmentation and assignment, separate from active leads.",
-    "attendance": "Attendance: clock in/clock out and team attendance visibility.",
-    "team": "Users & Teams: users, teams, hierarchy, roles and permissions.",
-    "org_profile": "Org Profile: organisation name, contact details, logo and company profile.",
-    "leadrat_ai": "Leadrat AI / MCP: connecting AI clients such as ChatGPT, Claude or Gemini to Leadrat."
+    "add_lead": "Show how to add one new enquiry; collect required details and request confirmation before creating a lead."
   }
 }

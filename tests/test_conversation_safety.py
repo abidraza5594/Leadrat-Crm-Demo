@@ -173,46 +173,53 @@ def test_early_screen_opening_runs_before_the_answer_is_written(isolated_convers
         assert order==['open','answer'] and s.steps[0]['status']=='verified'
     asyncio.run(run())
 
-@pytest.mark.parametrize('feature,label,route',[('global_config','Global Config','global-config'),('data','Data','data'),
-    ('attendance','Attendance','attendance'),('team','Team','teams'),('org_profile','Org Profile','profile'),('leadrat_ai','LeadRat AI','leadrat-ai')])
-def test_every_sidebar_module_in_the_handbook_has_a_demo_screen(isolated_conversation_model,feature,label,route):
-    """Live report: 'explain me global config' was answered but its screen never opened."""
-    f=FEATURES[feature]
-    # Labels and route prefixes come from the CRM sidebar (src/app/layout/left-nav/left-nav.component.ts).
-    assert f['nav_label']==label and f['module']==route and f['path'].startswith('/'+route) and f['workspace']
-    question='explain '+label
-    isolated_conversation_model[question]={'kind':'product','feature':feature,'topic':f['knowledge_topics'][0],'demo':True}
+LOCATION={'id':'p7','path':'/global-config','page':'Global Config','section':'Integration','text':'Global Config › Integration'}
+
+def test_question_without_a_walkthrough_opens_the_located_screen(isolated_conversation_model,monkeypatch):
+    """Live report: "what is integration" opened a lead's communication screen. Any page or section is
+    located from the CRM's own screen map instead of being forced onto the nearest prepared walkthrough."""
+    isolated_conversation_model['what is integration']={'kind':'product','feature':'unknown','topic':'unknown','demo':True}
+    seen={}
+    async def prepare(encoder):pass
+    async def choose(completion,encoder,message,history,**kwargs):seen['message']=message;return LOCATION
+    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
     opened=[]
     class Worker:
-        async def open_module(self,f):opened.append(f['id']);return 'Verified'
+        async def open_location(self,location):opened.append(location['path']);return 'Global Config is open and its "Integration" section is highlighted.'
+        async def open_module(self,f):raise AssertionError('No prepared walkthrough applies')
     async def run():
         s=main.Session(worker=Worker())
-        await main.execute(s,question)
-        assert opened==[feature] and s.steps[0]['status']=='verified'
-        assert any(m['text']=='The '+f['title']+' is open.' for m in s.messages)
+        await main.execute(s,'what is integration')
+        assert seen['message']=='what is integration' and opened==['/global-config']
+        assert s.steps[0]['title']=='Global Config' and s.steps[0]['status']=='verified'
+        assert any('"Integration" section is highlighted' in m['text'] for m in s.messages)
     asyncio.run(run())
 
-def test_grounded_answer_opens_its_module_when_routing_missed(isolated_conversation_model,monkeypatch):
-    """Live report: 'tel me about fonfig' was answered from Global Config but no screen opened."""
-    isolated_conversation_model['tel me about fonfig']={'kind':'product','feature':'unknown','topic':'unknown','demo':True}
-    async def answer(*args,**kwargs):
-        return {'text':'Global Config holds tenant-wide masters.','grounded':True,'demo_requested':False,
-                'sources':[{'id':'doc:3#0','module':'Global Config'},{'id':'catalogue:modules#0','module':'Handbook scope'}]}
+def test_located_screen_text_is_given_to_the_answer(isolated_conversation_model,monkeypatch):
+    isolated_conversation_model['what is integration']={'kind':'product','feature':'unknown','topic':'unknown','demo':True}
+    async def prepare(encoder):pass
+    async def choose(*args,**kwargs):return LOCATION
+    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
+    got={}
+    async def answer(question,decision,features,**kwargs):got.update(kwargs);return {'text':'Integrations bring leads in.','grounded':True,'demo_requested':False,'sources':[]}
     monkeypatch.setattr(main.knowledge,'answer',answer)
-    opened=[]
     class Worker:
-        async def open_module(self,f):opened.append(f['id']);return 'Verified'
+        async def open_location(self,location):return 'Open.'
+    asyncio.run(main.execute(main.Session(worker=Worker()),'what is integration'))
+    assert got['location']==LOCATION
+
+def test_no_matching_location_opens_nothing(isolated_conversation_model,monkeypatch):
+    isolated_conversation_model['explain offplan']={'kind':'product','feature':'unknown','topic':'Offplan','demo':True}
+    async def prepare(encoder):pass
+    async def choose(*args,**kwargs):return None
+    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
+    class Worker:
+        async def open_location(self,location):raise AssertionError('Nothing matched; nothing may open')
     async def run():
         s=main.Session(worker=Worker())
-        await main.execute(s,'tel me about fonfig')
-        assert opened==['global_config'] and s.last_feature=='global_config'
-        assert s.messages[1]['text']=='The Global Config screen is open.'
+        await main.execute(s,'explain offplan')
+        assert not s.steps
     asyncio.run(run())
-
-def test_answer_spanning_several_modules_does_not_guess_a_screen():
-    answer={'grounded':True,'sources':[{'module':'Global Config'},{'module':'Lead Management'}]}
-    assert main.workspace_for(answer) is None
-    assert main.workspace_for({'sources':[{'module':'Listing Management'}]}) is None
 
 @pytest.mark.parametrize('decision',[{'kind':'product','feature':'unknown','topic':'Global Config','demo':False},
     {'kind':'product','feature':'unknown','topic':'Offplan','demo':True},{'kind':'product','feature':'leads','topic':'Lead Management','demo':False}])
@@ -230,11 +237,11 @@ def test_every_product_answer_ends_with_a_follow_up_question(isolated_conversati
 
 def test_bare_topic_with_nothing_pending_is_routed_as_a_product_question(monkeypatch):
     """A misspelled module name alone was taken as an empty customer answer ("Could you clarify that answer?")."""
-    replies=[{'kind':'CUSTOMER_FACT'},{'updates':[],'skip':False},{'feature':'org_profile','no_demo_quote':'','problem':False}]
+    replies=[{'kind':'CUSTOMER_FACT'},{'updates':[],'skip':False},{'feature':'screen','no_demo_quote':'','problem':False}]
     async def complete(*args,**kwargs):return replies.pop(0)
     monkeypatch.setattr(main.engine,'completion',complete)
     decision=asyncio.run(main.engine.classify({'message':'orgnisation profle','pending_question':None}))['decision']
-    assert decision['kind']=='product' and decision['feature']=='org_profile' and decision['demo']
+    assert decision['kind']=='product' and decision['feature']=='unknown' and decision['demo']
 
 def test_sharing_a_number_after_the_contact_question_is_permission(isolated_conversation_model):
     """Live report: a phone number given in reply to "Would you like someone to contact you? If yes, share..."

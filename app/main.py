@@ -13,22 +13,26 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from . import config
 from .browser import BrowserWorker, DemoError, device_location, has_login_credentials
-from .planner import FEATURES, Plan, plan, declined, small_talk, warm_up, write_request, USAGE
+from .browser_pool import WarmBrowser
+from .planner import FEATURES, declined, warm_up, write_request, USAGE
+from .project import PROJECT
+from .conversation_engine import ConversationEngine, Decision
+from .conversation_store import ConversationStore
+from .semantic_knowledge import SemanticKnowledge
 from .qualification import Facts, qualify
 from .voice import VoiceCache
 from .lead_browser import walkthrough
-from .qualify import EMAIL, PHONE, TOOLING, qualify_session, rules_extract, transcript_of
+from .qualify import EMAIL, PHONE, EXCLUDED_KINDS, qualify_session, rules_extract, transcript_of
 from . import handoff as handoffs
 from fastapi.responses import JSONResponse
 from . import docs
 
-READ_ONLY=("I can't do that here. This demo is read-only: I never delete, edit, save, send, upload, export, assign or call anything. "
+READ_ONLY=("I can't do that here. Only the confirmed Add Lead flow can save a new record. I do not delete, edit existing records, send, upload, export, assign or call. "
     "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
 # Spoken the moment a turn starts so the visitor hears Beacon within a second while the answer is prepared.
 # Voice only (no chat bubble); synthesised once per session in advance. Reported separately in eval/latency.py.
 ACKS={'question':'Let me check that for you.','action':'Sure, one moment.'}
 ACK_AFTER=float(__import__('os').getenv('ACK_AFTER_MS','700'))/1000
-QUESTION=re.compile(r"\b(how|why|what|where|when|which|who|can i|could i|does|do i|is it|are there|kya|kaise|kyu|kyun|kaha|kahan|batao|bataiye|explain)\b|\?\s*$",re.I)
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
 ABANDONED_AFTER=30
@@ -56,6 +60,7 @@ class Session:
     created:float=field(default_factory=time.monotonic)
     touched:float=field(default_factory=time.monotonic)
     seen:float=field(default_factory=time.monotonic)
+    last_completed:float=field(default_factory=time.monotonic)
     status:str='starting'
     messages:list=field(default_factory=list)
     steps:list=field(default_factory=list)
@@ -65,10 +70,12 @@ class Session:
     shown:set=field(default_factory=set)
     # The feature Beacon suggested in its last follow-up, so a bare "yes" can run it.
     offer:str|None=None
+    lead_draft:dict|None=None
     worker:BrowserWorker=field(default_factory=BrowserWorker)
     task:asyncio.Task|None=None
     boot:asyncio.Task|None=None
     relogin:asyncio.Task|None=None
+    refresh_task:asyncio.Task|None=None
     last_turn:float=0
     last_turn_ms:int|None=None
     # Per-turn stage timings (ms since the turn was received); aggregate numbers only, no transcript.
@@ -86,6 +93,9 @@ class Session:
     discovery_answers:dict=field(default_factory=dict)
     closed_politely:bool=False
     accepted_turns:dict=field(default_factory=dict)
+    last_decision:dict|None=None
+    fact_evidence:dict=field(default_factory=dict)
+    customer_revision:int=0
     def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
@@ -99,8 +109,10 @@ class Session:
             for part in parts:self.voice_cache.prepare(part)
         self.messages=self.messages[-80:]
     def qual_view(self):
-        if self.qual:return {**self.qual['qualification'],'scorer':self.qual['source'],'fallback_attempts':self.qual['attempts']}
-        return qualify(Facts(),declined=self.opted_out)
+        if self.qual:return {**accepted_qualification(self,self.qual),'scorer':self.qual['source'],'fallback_attempts':self.qual['attempts']}
+        from slm.labels import Extraction,complete
+        pending=accepted_qualification(self,{'source':'pending','qualification':complete(Extraction()).model_dump()})
+        return {**pending,**qualify(Facts(),declined=self.opted_out)}
     def snapshot(self):
         problem=getattr(self.worker,'login_problem',None)
         return {'id':self.id,'status':self.status,'busy':bool(self.task and not self.task.done()),'messages':self.messages,
@@ -110,19 +122,24 @@ class Session:
 sessions:dict[str,Session]={}
 create_lock=asyncio.Lock()
 background:set[asyncio.Task]=set()
+browser_pool=WarmBrowser()
+conversation_store=None
+knowledge=SemanticKnowledge(project=PROJECT['id'],directory=PROJECT['knowledge_dir'])
+engine=ConversationEngine(FEATURES,[],knowledge,project=PROJECT['id'])
 
 def spawn(coroutine):
     # asyncio keeps only weak references to tasks; hold fire-and-forget work until it finishes.
     task=asyncio.create_task(coroutine);background.add(task);task.add_done_callback(background.discard)
 
 async def close(s):
-    for task in [s.task,s.boot,s.relogin,s.qual_task]:
+    for task in [s.task,s.boot,s.relogin,s.qual_task,s.refresh_task]:
         if task and not task.done():
             task.cancel()
             with suppress(asyncio.CancelledError):await task
     with suppress(Exception):await s.worker.close()
     s.voice_cache.close()
     s.messages.clear();s.steps.clear();sessions.pop(s.id,None)
+    if not sessions:browser_pool.prime()
 
 async def cleanup():
     while True:
@@ -133,15 +150,46 @@ async def cleanup():
 
 @asynccontextmanager
 async def lifespan(app):
+    global conversation_store
+    conversation_store=ConversationStore()
+    await conversation_store.start()
+    engine.store=conversation_store;knowledge.store=conversation_store
+    engine.topics=sorted({c['module'] for c in docs.load(PROJECT['knowledge_dir'])})
     handoffs.prune()  # retention: drop handoff records older than HANDOFF_RETENTION_DAYS
     tasks=[asyncio.create_task(cleanup()),asyncio.create_task(warm_up())]
+    # Build the immutable handbook index before the first visitor question.
+    async def warm_handbook():
+        from .handbook_faq import entries
+        await asyncio.to_thread(entries)
+        await asyncio.to_thread(docs.index)
+    tasks.append(asyncio.create_task(warm_handbook()))
+    async def warm_search():
+        try:await knowledge.warm()
+        except Exception as exc:print('Semantic knowledge preparation failed:',type(exc).__name__,flush=True)
+    if os.getenv('BEACON_WARM_KNOWLEDGE')=='1':tasks.append(asyncio.create_task(warm_search()))
+    if config.PROVIDER=='local' and __import__('os').getenv('BEACON_START_LOCAL_MODEL')=='1':
+        async def start_model():
+            from slm.local_runtime import ensure_local_model
+            try:await asyncio.to_thread(ensure_local_model)
+            except Exception as exc:print('Local model startup failed:',str(exc),flush=True)
+        tasks.append(asyncio.create_task(start_model()))
+    if config.PLANNER_BACKEND=='llamacpp' and os.getenv('BEACON_START_LOCAL_MODEL')=='1':
+        async def start_planner():
+            from slm.planner_runtime import ensure_planner
+            try:await asyncio.to_thread(ensure_planner)
+            except Exception as exc:print('Conversation model startup failed:',str(exc),flush=True)
+        tasks.append(asyncio.create_task(start_planner()))
     # Sign-in needs the device location; read it before the first visitor waits for it.
     if config.LOCAL_DEVICE_LOCATION and has_login_credentials():tasks.append(asyncio.create_task(device_location()))
+    browser_pool.enabled=__import__('os').getenv('BEACON_PREWARM_BROWSER')=='1'
+    browser_pool.prime()
     yield
+    await browser_pool.close()
     for task in tasks:task.cancel()
     for task in tasks:
         with suppress(BaseException):await task
     for s in list(sessions.values()):await close(s)
+    await conversation_store.close();conversation_store=None;engine.store=None;knowledge.store=None
 
 app=FastAPI(title='Beacon standalone demo backend',lifespan=lifespan,docs_url='/api/docs',redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','testserver'])
@@ -177,7 +225,8 @@ def owned(id,request,touch=False):
 
 async def boot(s):
     try:
-        await s.worker.start()
+        if browser_pool.enabled:s.worker=await browser_pool.take()
+        else:await s.worker.start()
         if await s.worker.signed_in():
             s.status='ready';s.say('The test CRM is ready. Ask me to show Leads, Projects, Tasks or another available feature.')
         else:
@@ -222,28 +271,26 @@ async def refresh_status(s):
 
 @app.get('/api/health')
 async def health():
-    model_available=False
-    local_details={}
-    try:
-        async with httpx.AsyncClient(timeout=2) as client:
-            data=(await client.get(config.OLLAMA_URL+'/api/tags')).json()
-            model_available=config.MODEL in [m['name'] for m in data.get('models',[])]
-    except Exception:pass
-    if config.PROVIDER=='openai':
-        import os
-        model_available=bool(os.getenv('OPENAI_API_KEY'))
-    if config.PROVIDER=='local':
+    local_details={};planner_available=False
+    async with httpx.AsyncClient(timeout=2) as client:
         try:
-            async with httpx.AsyncClient(timeout=2) as client:
-                response=await client.get(config.LOCAL_MODEL_URL+'/health');response.raise_for_status()
-                local_details=response.json();model_available=bool(local_details.get('ready'))
-        except Exception:model_available=False
-    return {'status':'ok','provider':config.PROVIDER,'model':config.LOCAL_CHAT_MODEL if config.PROVIDER=='local' else config.OPENAI_MODEL if config.PROVIDER=='openai' else config.MODEL,'model_available':model_available,'sandbox_confirmed':config.SANDBOX_CONFIRMED,
-      'reasoning_effort':'low' if config.PROVIDER=='openai' else None,'api_usage':USAGE,
+            r=await client.get(config.LOCAL_MODEL_URL+'/health');r.raise_for_status();local_details=r.json()
+        except (httpx.HTTPError,ValueError):pass
+        try:
+            from .local_model import request_headers
+            r=await client.get(config.PLANNER_MODEL_URL+'/v1/models',headers=request_headers());r.raise_for_status()
+            planner_available=config.PLANNER_MODEL in [m['id'] for m in r.json()['data']]
+        except (httpx.HTTPError,ValueError,KeyError,OSError):pass
+    return {'status':'ok','provider':'local','model':config.PLANNER_MODEL,
+      'model_available':planner_available,'qualification_available':bool(local_details.get('ready')),
+      'sandbox_confirmed':config.SANDBOX_CONFIRMED,'api_usage':USAGE,
       'screen_transport':'authenticated_jpeg_polling','demo_browser':'hidden' if config.HEADLESS else 'visible_window',
       'saved_login':config.BROWSER_STATE.is_file(),'login_credentials_in_memory':has_login_credentials(),
-      'speech':config.TTS_PROVIDER,'qualification':local_details.get('qualification_model','configured_fallback_ladder'),
-      'qualification_weights_sha256':local_details.get('weights_sha256'),'external_llm_calls':config.PROVIDER=='openai','capacity':1}
+      'speech':config.TTS_PROVIDER,'qualification':local_details.get('qualification_model','unavailable'),
+      'qualification_weights_sha256':local_details.get('weights_sha256'),'external_llm_calls':False,'capacity':1,
+      'conversation_engine':'langgraph-context-v1','conversation_model':config.PLANNER_MODEL,
+      'conversation_database':conversation_store.backend if conversation_store else 'not_started',
+      'knowledge_ready':knowledge.ready,'knowledge_error':knowledge.error}
 
 @app.post('/api/sessions',status_code=201)
 async def create(body:Create):
@@ -258,13 +305,22 @@ async def create(body:Create):
         spawn(warm_up())
         s.say('Welcome to Beacon. I can explain the verified feature catalogue and demonstrate supported screens in the test CRM.')
         s.boot=asyncio.create_task(boot(s))
+        # A prepared browser can be handed over immediately, without a starting-state poll.
+        if browser_pool.ready():
+            # Even a preloaded browser can stall checking CRM authentication.
+            # Return ownership promptly so a lost POST cannot strand a session.
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(s.boot),timeout=0.25)
     return {**s.snapshot(),'token':s.token,'capabilities':[{'id':f['id'],'title':f['title']} for f in FEATURES.values()], 'message':s.messages[-1]['text']}
 
 @app.get('/api/sessions/{id}')
 async def state(id:str,request:Request):
     s=owned(id,request)
     # A transient page error must never end the visitor's session.
-    with suppress(Exception):await refresh_status(s)
+    if not s.refresh_task or s.refresh_task.done():
+        async def refresh():
+            with suppress(Exception):await refresh_status(s)
+        s.refresh_task=asyncio.create_task(refresh())
     return s.snapshot()
 
 @app.get('/api/sessions/{id}/screen')
@@ -276,88 +332,125 @@ async def screen(id:str,request:Request):
         return Response(frame,media_type='image/jpeg') if frame else Response(status_code=204)
     except Exception:return Response(status_code=204)
 
+def conversation_context(s,message):
+    messages=s.messages
+    # The current turn is supplied separately; duplicating it in history can
+    # make a short answer appear to answer itself instead of the last question.
+    if messages and messages[-1]['role']=='user' and messages[-1]['text']==message:
+        messages=messages[:-1]
+    history=[{'role':m['role'],'text':m['text'][:240]} for m in messages
+             if m.get('kind') not in {'ack','lead_creation'}][-8:]
+    return dict(session_id=s.id,message=message,history=history,customer=s.discovery_answers,
+        pending_question=s.pending_discovery,last_feature=s.last_feature,last_offer=s.offer)
+
+
 async def execute(s,message):
-    started=time.monotonic();answered=False;handbook=None;ack=None
+    started=time.monotonic();ack=None;needs_qualification=False
+    lead_turn=bool(s.lead_draft);message_start=len(s.messages)
     try:
+        # Form values/confirmation are validation, not product intent routing.
+        if s.lead_draft:
+            from .lead_creation import handle
+            if await handle(s,message):return
         if declined(message):
-            s.opted_out=True
-            s.say('Understood. I will not request contact details or send a follow-up or handoff. Thank you for exploring Leadrat.')
+            s.opted_out=True;s.discovery_answers['consent']=False;s.pending_discovery=None
+            s.customer_revision+=1
+            needs_qualification=True
+            s.say('Understood. I will not request contact details or send a follow-up. You can continue exploring the product.')
             return
         if write_request(message):
-            # Enforced before planning: no model output or browser action can turn this into a write.
-            s.steps.append({'title':'Requested CRM change','status':'blocked','detail':'Read-only demo: delete, edit, save, send, upload, export, assign and call are not permitted.'})
-            s.say(READ_ONLY)
-            return
-        if message.strip().lower().rstrip('.!') in {'repeat','repeat that','say that again','dobara batao'}:
-            previous=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant' and not m.get('kind')),None)
-            s.say(previous or 'Please name the feature you would like me to explain.')
-            return
-        offer,s.offer=s.offer,None
-        if accept_discovery_reply(s,message):
-            discover(s)
-            # Discovery is finished: move the demo on instead of going quiet.
-            if not s.pending_discovery:follow_up(s)
-            return
-        text=message.strip().lower().rstrip('.!')
-        forced=Plan(feature=offer,demo=True) if offer and AFFIRM.fullmatch(text) else None
-        if offer and not forced and NEGATE.fullmatch(text):
-            s.say('Sure. What would you like to see instead?')
-            return
-        from .conversation_numbers import count_reply
-        if not forced and (count_reply(message) is not None or re.fullmatch(r'(?:yes|yeah|yep|no|nope|haan|han|nahi|nahin)',message.strip(),re.I)):
-            s.say('Please tell me what you mean, or name the feature you would like to see.')
-            return
-        # An unrelated product request supersedes a pending discovery question.
-        # A later bare number must not silently answer an old question.
-        s.pending_discovery=None
-        reply=None if forced else small_talk(message)
-        if reply:
-            s.say(reply)
-            return
+            s.steps.append({'title':'Requested CRM change','status':'blocked','detail':READ_ONLY})
+            s.say(READ_ONLY);return
         if s.voice_enabled:
-            # Only when the answer is slow: an acknowledgement ahead of a ready answer would delay it.
-            turn_messages=len(s.messages)
+            count=len(s.messages)
             async def acknowledge():
                 await asyncio.sleep(ACK_AFTER)
-                if len(s.messages)==turn_messages:s.say(ACKS['question' if QUESTION.search(message) else 'action'],kind='ack')
+                if len(s.messages)==count:s.say(ACKS['question'],kind='ack')
             ack=asyncio.create_task(acknowledge())
-        # The handbook answer does not depend on the plan: start it now so the two model calls overlap.
-        handbook=asyncio.create_task(docs.answer(message)) if QUESTION.search(message) else None
-        selected,source=(forced,'follow_up') if forced else await plan(message,s.last_feature)
-        if s.timings:s.timings[-1].update(plan_ms=round((time.monotonic()-s.turn_started)*1000),plan_source=source)
-        if selected.feature=='unknown':
-            # Not a screen Beacon can show: answer from the company handbook, or say it does not know.
-            s.say((await (handbook or docs.answer(message)))['text'])
-            s.say('This specific screen walkthrough is not available in the current demo. The live view remains on the previous screen.')
+        outcome=await engine.decide(**conversation_context(s,message))
+        d=Decision.model_validate(outcome['decision']);s.last_decision=d.model_dump()
+        if s.messages and s.messages[-1]['role']=='user' and s.messages[-1]['text']==message:
+            s.messages[-1]['kind']='customer_answer' if d.kind=='customer' else 'product_question' if d.kind=='product' else 'unverified_input'
+        if s.timings:s.timings[-1].update(plan_ready_ms=round((time.monotonic()-started)*1000),plan_source='langgraph_context')
+        if d.kind=='decline':
+            s.opted_out=True;s.discovery_answers['consent']=False;s.pending_discovery=None
+            s.customer_revision+=1
+            needs_qualification=True
+            s.say('Understood. I will not request contact details or arrange a follow-up.');return
+        if d.kind=='stop':s.say('The walkthrough has stopped.');return
+        if d.kind=='repeat':
+            previous=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant' and not m.get('kind')),None)
+            s.say(previous or 'What would you like me to explain?');return
+        if d.kind in {'clarify','chat'}:
+            s.say(d.reply or 'Which feature would you like to explore?');return
+        if d.kind=='customer':
+            if not d.updates and not d.skip:
+                s.say('Could you clarify that answer? I have not changed your details.')
+                return
+            pending=s.pending_discovery
+            for u in d.updates:
+                if u.field=='contact' and not (re.search(EMAIL,u.evidence) or re.search(PHONE,u.evidence)):
+                    s.say('Please share a valid email address or phone number, or say skip.');return
+                s.discovery_answers[u.field]=u.value
+                s.fact_evidence[u.field]={'quote':u.evidence,'message_id':s.messages[-1]['id'] if s.messages else None}
+                if u.field==pending:s.pending_discovery=None
+                if u.field=='consent' and u.value is False:s.opted_out=True
+            needs_qualification=bool(d.updates)
+            if d.updates:s.customer_revision+=1
+            if d.skip:s.pending_discovery=None
+            if s.discovery_answers.get('consent') is True and not s.discovery_answers.get('contact'):
+                s.pending_discovery='contact'
+            if any(u.field=='contact' for u in d.updates):
+                s.say(SAVED_CONTACT,kind='customer_ack')
+                if s.pending_discovery in {'contact','consent'}:s.pending_discovery=None
+            else:
+                acknowledgements=[]
+                for u in d.updates:
+                    if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value)+'.')
+                    elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {u.value:,} people on your sales team.')
+                    elif u.field=='monthly_leads':acknowledgements.append(f'Got it — approximately {u.value:,} new leads per month.')
+                    elif u.field=='process':acknowledgements.append('You currently use '+str(u.value)+'.')
+                s.say(' '.join(acknowledgements) or ('No problem, we can skip that.' if d.skip else 'Thanks, I have noted that.'),kind='customer_ack')
+            if s.pending_discovery:
+                question=dict(DISCOVERY).get(s.pending_discovery)
+                if s.pending_discovery=='pain_points' and any(u.field=='process' for u in d.updates):
+                    question='What is the biggest difficulty with your current tool?'
+                if s.pending_discovery=='contact':question='Please share the email or phone number the team should use.'
+                if question:s.say(question)
+            else:
+                discover(s)
+                if not s.pending_discovery:follow_up(s)
             return
-        f=FEATURES[selected.feature];s.last_feature=f['id']
+        # Product answer and action consume the very same validated decision.
+        s.offer=None
+        answer=outcome['answer'];s.say(answer['text'],kind='product_answer')
+        if d.feature=='unknown':
+            if d.demo:s.say('This walkthrough is not available in the current demo.',kind='product_answer')
+            return
+        f=FEATURES[d.feature];s.last_feature=d.feature
+        if not d.demo:return
         s.worker.notify=s.say
-        # Questions get an answer from the handbook when it has one; the reviewed catalogue text is the fallback.
-        grounded=await handbook if handbook else await docs.answer(message) if not selected.demo else None
-        answered=bool(grounded and grounded['grounded'])
-        if not selected.demo:
-            s.say(grounded['text'] if grounded and grounded['grounded'] else ' '.join(f['facts']));return
-        step={'title':f['title'],'status':'running','detail':'Checking the visible CRM navigation.'}
-        s.steps.append(step)
-        # Answer the question from the handbook first; the screen then shows where it happens.
-        s.say(grounded['text'] if answered else f['facts'][0])
+        step={'title':f['title'],'status':'running','detail':'Checking the requested CRM screen.'};s.steps.append(step)
         result=await s.worker.open_module(f)
-        step['status']='verified';step['detail']=result
-        s.shown.add(f['module'])
-        # Only a how-to answer needs the caveat that the screen shows the workspace, not the procedure.
-        if f['id'] in {'leads','projects','tasks','properties','dashboard'} and answered:
-            s.say('The '+f['title']+' is open on screen; the steps above happen from here.')
-        if f['id'] not in {'leads','projects','tasks','properties','dashboard'}:
-            step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'}
-            s.steps.append(step)
+        step['status']='verified';step['detail']=result;s.shown.add(f['module'])
+        if f['id'] in {'leads','projects','tasks','properties','dashboard'}:
+            s.shown.add(f['id'])
+            s.say('The '+f['title']+' is open.',kind='product_answer')
+        else:
+            step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'};s.steps.append(step)
             result=await walkthrough(s.worker,f)
             overview_only='has not been opened or executed' in result or result.startswith('Email prerequisite:')
             step['status']='overview_only' if overview_only else 'verified';step['detail']=result
             if not overview_only:s.shown.add(f['id'])
-            s.say(result)
-        if not answered:s.say(f['facts'][1])
-        # One question per turn: tailor the demo first, otherwise suggest the next screen.
-        discover(s)
+            s.say(result,kind='product_answer')
+        if f['id']=='add_lead':
+            lead_turn=True
+            from .lead_creation import begin
+            await begin(s);return
+        if s.pending_discovery:
+            question=dict(DISCOVERY).get(s.pending_discovery)
+            if question:s.say('And to continue: '+question)
+        else:discover(s)
         if not s.pending_discovery:follow_up(s)
     except asyncio.CancelledError:
         for step in s.steps:
@@ -365,29 +458,40 @@ async def execute(s,message):
         raise
     except DemoError as exc:
         s.last_error=str(exc);s.say(str(exc))
-        # A handbook answer already covers the procedure when the screen cannot be shown.
-        if s.last_feature in FEATURES and not answered:s.say('Here is the procedure: '+FEATURES[s.last_feature]['facts'][1])
         for step in s.steps:
             if step['status']=='running':step['status']='failed';step['detail']=str(exc)
-    except (httpx.HTTPError,ValueError,KeyError):
-        s.last_error='The planner did not return a valid plan within its time limit or the provider rejected the request. No model-generated action was run.'
-        s.say('I could not interpret that request right now. Try a shorter question such as “Show leads” or “How to change lead status”.')
-    except Exception:
-        s.last_error='The expected CRM control or screen could not be verified. The action stopped; no alternate control was clicked.'
+    except Exception as exc:
+        s.last_error='I could not complete this request. Please try again.'
         s.say(s.last_error)
+        print('Conversation execution failed:',type(exc).__name__,flush=True)
         for step in s.steps:
             if step['status']=='running':step['status']='failed';step['detail']=s.last_error
     finally:
-        if handbook and not handbook.done():handbook.cancel()
         if ack and not ack.done():ack.cancel()
-        # Only aggregate timing; no transcript or records written to logs.
+        s.last_completed=time.monotonic()
         s.last_turn_ms=round((time.monotonic()-started)*1000)
-        # Exact handbook questions contain no new customer facts. Preserve any
-        # ongoing extraction instead of queueing another expensive GPU request.
-        from .handbook_faq import lookup
-        if not lookup(message):
+        if lead_turn:
+            for m in s.messages[message_start:]:m['kind']='lead_creation'
+            if message_start and s.messages[message_start-1]['role']=='user':s.messages[message_start-1]['kind']='lead_creation'
+        if engine.store:
+            try:
+                state=conversation_context(s,message)
+                state.update(decision=s.last_decision,steps=s.steps,fact_evidence=s.fact_evidence,
+                    last_turn_ms=s.last_turn_ms,handoff_status=s.handoff_status,opted_out=s.opted_out)
+                await engine.store.save(PROJECT['id'],s.id,state)
+            except Exception as exc:print('Conversation persistence failed:',type(exc).__name__,flush=True)
+        if needs_qualification and not lead_turn:
             if s.qual_task and not s.qual_task.done():s.qual_task.cancel()
-            s.qual_task=asyncio.create_task(requalify(s))
+            async def after_pause():
+                # Do not start a full GPU extraction for every short reply
+                # while the next interactive turn is using the CPU planner.
+                # Accepted facts are already visible in the preliminary JSON.
+                idle=0.6 if not s.pending_discovery else 8
+                await asyncio.sleep(idle)
+                while (s.task and not s.task.done()) or time.monotonic()-s.last_completed<idle:
+                    await asyncio.sleep(0.2)
+                await requalify(s)
+            s.qual_task=asyncio.create_task(after_pause())
 
 @app.post('/api/sessions/{id}/turn',status_code=202)
 async def turn(id:str,body:Turn,request:Request):
@@ -475,9 +579,7 @@ def known(q,path):
     for part in path.split('.'):value=value.get(part) if isinstance(value,dict) else None
     return value not in (None,'unknown',{'min':None,'max':None})
 
-SAVED_CONTACT='Thank you, I have noted your contact details. The Leadrat team will get in touch.'
-AFFIRM=re.compile(r"(?:yes|yeah|yep|yup|sure|ok|okay|haan|han|ha|ji|haan ji|yes please|please|go ahead|show|show me|show it|dikhao|haan dikhao|chalo|of course|why not|let'?s see)")
-NEGATE=re.compile(r'(?:no|nope|nah|nahi|nahin|no thanks|not now|later|baad me|baad mein)')
+SAVED_CONTACT='Thank you, I have noted your contact details.'
 # What a visitor usually wants after each screen; the first one not yet shown is suggested.
 NEXT_STEPS={'leads':['add_lead','status','site_visit'],'add_lead':['status','site_visit'],'status':['site_visit','meeting'],
     'site_visit':['notes','projects'],'meeting':['notes','tasks'],'projects':['properties','leads'],'properties':['matching','projects'],
@@ -508,102 +610,59 @@ def discover(s):
         s.pending_discovery='consent'
         s.say('Would you like someone from Leadrat to contact you? If yes, share an email or phone number.')
 
-def accept_discovery_reply(s,message):
-    """Consume a reply to our own question before any product navigation.
-
-    Keep the original transcript for customer extraction. These local values only
-    guide the conversation; they are not a substitute for sales qualification.
-    """
-    pending=s.pending_discovery
-    if QUESTION.search(message):return False
-    text=message.strip().lower().rstrip('.!')
-    from .conversation_numbers import count_reply
-    correction=re.fullmatch(r'(?:actually|correction|sorry|actually we have)[, ]+(.+?)\s+(agents|people|team members|leads per month|monthly leads)',text)
-    if correction:
-        count=count_reply(correction[1])
-        if count is not None:
-            path='monthly_leads' if 'leads' in correction[2] else 'organisation.agents'
-            s.discovery_answers[path]=count
-            s.say(f'Thanks for correcting that: {count:,} '+('new leads per month.' if path=='monthly_leads' else 'people on your sales team.'))
-            if pending==path:s.pending_discovery=None
-            elif pending in dict(DISCOVERY):s.say(dict(DISCOVERY)[pending])
-            return True
-    if not pending:return False
-    # Skips and uncertainty answer the discovery turn, not the feature planner.
-    if text in {'skip','skip this','not sure','dont know',"don't know",'pata nahi','later','prefer not to say'}-({'later'} if pending=='next_step' else set()):
-        s.pending_discovery=None
-        s.say('No problem, we can leave that detail unknown.')
-        return True
-    # An acknowledgement is not an answer to a count or business-type question.
-    if pending not in {'consent','contact'} and text in {'yes','yeah','yep','no','nope','haan','han','nahi','nahin','ok','okay'}:
-        question=dict(DISCOVERY).get(pending,'Could you share a little more detail?')
-        s.say(question+' You can also say skip.')
-        return True
-    value=None;reply=None
-    if pending=='organisation.type':
-        match=re.fullmatch(r"(?:(?:i am|i'm|we are|we're|main|hum) (?:(?:a|an) )?)?(channel partners?|brokerage|brokers?|developers?|builders?)(?: (?:hu|hoon|hai|hain))?",text)
-        if match:value=match[1];reply=f'Thanks — you are a {value}.'
-    elif pending in {'organisation.agents','monthly_leads'}:
-        from .conversation_numbers import count_reply
-        value=count_reply(text)
-        if value is not None:
-            reply=(f'Got it — {value:,} people on your sales team.' if pending=='organisation.agents' else f'Got it — approximately {value:,} new leads per month.')
-        elif re.fullmatch(r'[\d\s.,+\-/]+[a-z ]*',text):
-            s.say('Please give one approximate count, for example 20k or 20,000.')
-            return True
-    elif pending in {'pain_points','process','influence','next_step'}:
-        from .planner import shortcut,romanize
-        if not re.search(r'\b(show|open|demo|schedule|explain|dikhao|kholo)\b',text) and not shortcut(romanize(text)):
-            value=message.strip();reply=noted(s,pending,text)
-    elif pending=='consent':
-        contact=re.search(EMAIL,message) or re.search(PHONE,message)
-        if contact or re.match(r'(?:yes|yeah|yep|sure|ok|okay|haan|han|ji)\b',text):
-            value=True
-            reply=(SAVED_CONTACT if contact else 'Great. Please share the email or phone number the team should use.')
-        elif text in {'no','nope','nahi','nahin','no thanks'}:
-            value=False;s.opted_out=True;reply='Understood. I will not request contact details or arrange a follow-up.'
-    elif pending=='contact':
-        if re.search(EMAIL,message) or re.search(PHONE,message):
-            value=True;reply=SAVED_CONTACT
-        elif text in {'no','nope','nahi','nahin','no thanks'}:
-            value=False;reply='No problem, I will not ask for contact details again.'
-        elif not re.search(r'\b(show|open|demo|how|what|dikhao|kholo)\b',text):
-            s.say('Please share an email address or phone number, or say skip.')
-            return True
-    if value is None:return False
-    s.discovery_answers[pending]=value;s.pending_discovery=None
-    # Consent without contact details: the next reply is the email or phone number, not a demo request.
-    if pending=='consent' and value is True and reply!=SAVED_CONTACT:s.pending_discovery='contact'
-    s.say(reply)
-    return True
-
-def noted(s,pending,text):
-    """Acknowledge a free-text answer in its own terms rather than with a stock phrase."""
-    tool=next((name for pattern,name in TOOLING if re.search(pattern,text)),None)
-    if tool and 'process' not in s.discovery_answers:s.discovery_answers['process']=tool
-    # Neutral on purpose: the qualifier reads this transcript and copies or cites Beacon's paraphrases as the visitor's facts.
-    if pending=='pain_points':return 'Got it, thanks for sharing that.'
-    if pending=='process':return 'Got it, thanks.'
-    if pending=='next_step':return 'Got it, thanks.'
-    return 'Thanks, that helps.'
+def accepted_qualification(s,result):
+    # The trained extractor cannot overwrite the visitor's accepted corrections
+    # or grant contact permission which the conversation never recorded.
+    from slm.labels import Qualification,Range
+    from slm.prompting import rescore
+    q=Qualification.model_validate(result['qualification'])
+    answers=s.discovery_answers
+    org=q.organisation.model_copy(update={'type':answers.get('organisation.type','unknown'),
+                                          'agents':answers.get('organisation.agents')})
+    changes={'organisation':org,'consent':answers.get('consent') is True and not s.opted_out}
+    count=answers.get('monthly_leads')
+    changes['monthly_leads']=Range(min=count,max=count)
+    for key in ('process','influence','next_step'):
+        if key not in answers:changes[key]='unknown'
+    # Preserve the visitor's latest accepted problem, even when the extractor
+    # used an earlier tool-name reply as the problem or fell back to rules.
+    changes['pain_points']=[answers['pain_points']] if answers.get('pain_points') else None
+    if not answers.get('contact'):
+        changes['contact']=q.contact.model_copy(update={'email':None,'phone':None})
+    if s.opted_out:changes['next_step']='declined'
+    messages=[m for m in s.messages if m.get('kind') not in EXCLUDED_KINDS]
+    turn_ids={m.get('id'):i+1 for i,m in enumerate(messages) if m['role']=='user' and m.get('id')}
+    evidence=dict(q.evidence)
+    missing_evidence=False
+    for key in ('organisation.type','organisation.agents','monthly_leads','pain_points','consent'):
+        if key not in answers:continue
+        tid=turn_ids.get(s.fact_evidence.get(key,{}).get('message_id'))
+        if tid:evidence[key]=[tid]
+        else:evidence.pop(key,None);missing_evidence=True
+    changes['evidence']=evidence
+    q=rescore(q.model_copy(update=changes))
+    if (result['source']!='slm' or missing_evidence) and q.route!='graceful_close':q=q.model_copy(update={'route':'human_review'})
+    return q.model_dump()
 
 async def requalify(s):
+    revision=s.customer_revision
     result=await qualify_session(list(s.messages))
-    if s.id not in sessions:return
+    if s.id not in sessions or s.customer_revision!=revision:return
+    result['qualification']=accepted_qualification(s,result)
     s.qual=result;q=result['qualification']
     show_handoff(s,result)
     if not s.opted_out and handoffs.eligible(q) and s.handoff_status=='not_requested':
         s.handoff_status='pending'
         s.handoff_status=await handoffs.deliver(handoffs.brief(s.id,q,s.shown))
         s.say('Thank you. I have shared your details with the Leadrat team, and someone will contact you soon.' if s.handoff_status=='delivered'
-              else 'I could not hand your details to the team just now; a Leadrat specialist will review this conversation.')
+              else 'I could not send your details to the team just now. Please use the contact option on the website.')
     elif q['route']=='graceful_close' and not s.closed_politely and not s.opted_out and q.get('icp_score') is not None:
         s.closed_politely=True
         s.say('Thank you for exploring Leadrat. It may not be the best fit for your business right now, but you are welcome to keep looking around.')
 
 def show_handoff(s,result):
     """Development aid: print what the sales team would receive after each turn (BEACON_PRINT_HANDOFF=0 turns it off)."""
-    if os.getenv('BEACON_PRINT_HANDOFF','1')=='0':return
+    if os.getenv('BEACON_PRINT_HANDOFF','0')=='0':return
     q=result['qualification']
     contact='yes' if q['contact'].get('email') or q['contact'].get('phone') else 'no'
     why=('already sent' if s.handoff_status!='not_requested' else 'visitor opted out' if s.opted_out

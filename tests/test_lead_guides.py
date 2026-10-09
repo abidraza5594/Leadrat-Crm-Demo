@@ -1,23 +1,10 @@
 import asyncio
 import pytest
-from app.planner import FEATURES, Plan, plan, shortcut
+from app.planner import FEATURES, Plan
 from app.voice import VoiceCache
 from app import main
 
-@pytest.mark.parametrize('question,expected',[
- ('how to change status','status'),('schedule meeting','meeting'),('how to schedule site visit','site_visit'),
- ('how to bulk status','bulk_update'),('show notes','notes'),('show email','email'),
- ('show whatsapp','whatsapp'),('show lead pool','lead_pool'),('show saved filter','saved_filters')])
-def test_explicit_topics_without_paid_request(question,expected):
-    assert shortcut(question).feature==expected
 
-def test_context_and_catalogue():
-    result,_=asyncio.run(plan('template','email'))
-    assert result.feature=='email'
-    for key,f in FEATURES.items():
-        assert Plan(feature=key,demo=True).feature==key
-        assert len(f['facts'])>=2 and f['source']
-    with pytest.raises(ValueError):Plan(feature='run_javascript',demo=True)
 
 def test_audio_prefetch_deduplicates_and_stable_ids(monkeypatch):
     async def run():
@@ -46,5 +33,5 @@ def test_failed_nested_action_explains_without_claiming_demo(monkeypatch):
         await main.execute(s,'show email')
         assert s.steps[-1]['status']=='failed'
         assert 'email' not in s.shown
-        assert any('Here is the procedure:' in m['text'] for m in s.messages)
+        assert any('No email control' in m['text'] for m in s.messages)
     asyncio.run(run())

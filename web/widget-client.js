@@ -10,6 +10,12 @@
   let failures = 0, stopPending = false, pollRunning = false, frameLoopRunning = false, shownFrameURL = null, hasFrame = false;
   let lastStateError = '', stepsKey = '', firstRender = true;
   let pendingRequest = null;
+  let userEnded = false, reconnectTimer = null, reconnectAttempts = 0;
+  function reconnect() {
+    if (closed || userEnded || session || reconnectTimer || reconnectAttempts >= 3) return;
+    notice('Connecting your workspace…');
+    reconnectTimer=setTimeout(()=>{reconnectTimer=null;start();},1000 * 2 ** reconnectAttempts++);
+  }
   const rendered = new Map();
   const active = () => !!session && !ending && !closed;
   const ready = () => active() && ['ready','active','login_required'].includes(state?.status) && !state?.busy && !sending && !stopPending;
@@ -119,9 +125,15 @@
       if(!frameLoopRunning) frameLoop(target);
     } catch(e) {
       if(target!==session || !active())return;
-      failures++;setText(ui['screen-status'],'Connection interrupted');error(e.message || 'Unable to reach Beacon. Check that the demo service is running.');
-      if([401,403,404,410].includes(e.status)){await endSession(false);notice('This session is no longer available. Start a new session to reconnect.');return;}
-    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy?150:700));}
+      failures++;setText(ui['screen-status'],'Reconnecting…');
+      if(failures>=3)error(e.message || 'Unable to reach Beacon. Check that the demo service is running.');
+      if([401,403,404,410].includes(e.status)){
+        await endSession(false);
+        if([404,410].includes(e.status))reconnect();
+        else notice('Access to this session was refused. Please check the connection settings.');
+        return;
+      }
+    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy?100:300));}
   }
 
   // ---- Live screen: its own loop, decode before swapping, never blank on a transient miss.
@@ -306,7 +318,7 @@
       const recent = voiceQueue.recentSpeech(); if (!recent) return false;
       const said = words(recent + ' ' + currentReply()), got = words(text);
       if (!got.length) return true;
-      if (got.length === 1) return said.includes(got[0]) && !STOP_WORDS.test(got[0]);
+      if (got.length === 1) return false; // Short replies like "developer" and "yes" are valid answers.
       const known = new Set(pairs(said)), heardPairs = pairs(got);
       return heardPairs.filter(p => known.has(p)).length / heardPairs.length > 0.5;
     }
@@ -332,7 +344,8 @@
       heard = ''; typed = null;
       if (!text) return;
       if (STOP_WORDS.test(text.replace(/[.!?।,]+/g, '').trim())) { ui.message.value = ''; controls(); stop(); return; }
-      send(text);
+      if ($('speech-auto-send')?.checked) send(text);
+      else { ui.message.value=text; controls(); status('Check the words, edit if needed, then press Send.'); }
     }
     function onResult(e) {
       let finals = '', interim = '';
@@ -348,7 +361,7 @@
       clearTimeout(flushTimer);
       // Send after a short pause, so a question spoken with a breath in the middle is not split in two.
       // Chrome sends a final result only after the visitor pauses, so a short grace period is enough.
-      if (heard.trim()) flushTimer = setTimeout(flush, live ? 900 : 300);
+      if (heard.trim()) flushTimer = setTimeout(flush, live ? 1800 : 1200);
     }
     function schedule(ms) { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, ms); }
     async function listen() {
@@ -358,7 +371,7 @@
       catch { on = false; paint(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); return; }
       if (!on || listening || !active()) return;
       const r = new Recognition(); recognition = r;
-      r.lang = lang; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+      r.lang = lang; r.interimResults = true; r.continuous = true; r.maxAlternatives = 3;
       r.onresult = onResult;
       r.onerror = e => {
         if (['not-allowed','service-not-allowed'].includes(e.error)) { on = false; releaseMic(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); }
@@ -407,17 +420,25 @@
   })();
 
   async function start() {
-    if(starting || session)return;starting=true;error('');notice('');controls();voiceQueue.unlock();
+    if(starting || session || closed || userEnded)return;
+    clearTimeout(reconnectTimer);reconnectTimer=null;
+    starting=true;error('');notice('');controls();voiceQueue.unlock();
     try {
-      const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null);const next=await response.json();
+      const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null,60000);const next=await response.json();
       if(!next.id || !next.token)throw new Error('Beacon returned an incomplete session. Please try again.');
+      if(closed || userEnded){
+        await request(endpoint('',next),{method:'DELETE'},next).catch(()=>{});return;
+      }
+      reconnectAttempts=0;
       session={id:next.id,token:next.token};state=next;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
       pendingRequest=null;
       // Server-side voice preparation starts once it knows the preference.
-      await request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:voiceQueue.enabled})}).catch(()=>{});
-      render(next);poll(session);
+      request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:voiceQueue.enabled})}).catch(()=>{});
+      render(next);
+      if(!frameLoopRunning)frameLoop(session);
+      poll(session);
     }
-    catch(e){error(e.message || 'Could not connect to Beacon. Check that the demo service is running.');setText(ui.status,'Unable to connect');}
+    catch(e){error(e.message || 'Could not connect to Beacon. Check that the demo service is running.');setText(ui.status,'Unable to connect');if(![401,403,409].includes(e.status))reconnect();}
     finally{starting=false;controls();}
   }
   async function send(message) {
@@ -446,12 +467,13 @@
     finally{sending=false;controls();}
   }
   async function endSession(remote=true) {
+    if(remote){userEnded=true;clearTimeout(reconnectTimer);reconnectTimer=null;}
     if(ending)return;const target=session;ending=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();controls();
     if(remote && target){try{await request(endpoint('',target),{method:'DELETE'},target);}catch(e){error('Could not confirm that the session ended. '+e.message);ending=false;controls();poll(target);return;}}
     session=null;state=null;ending=false;voiceQueue.reset();rendered.clear();stepsKey='';clearScreen();ui.activity.hidden=true;setText(ui.status,'Session ended');ui['status-dot'].className='';setText(ui['screen-status'],'Waiting for a session');setText(ui['empty-description'],'Your session has ended. Start a new session to explore again.');notice('');ui.messages.replaceChildren();const p=document.createElement('p');p.className='welcome';p.textContent='Thanks for exploring. Start a new session whenever you’re ready.';ui.messages.append(p);controls();
   }
   async function stop(){if(!session || stopPending)return;voiceQueue.cancel();stopPending=true;controls();try{await request(endpoint('/stop'),{method:'POST'});error('');notice('The current walkthrough was stopped.');}catch(e){error(e.message);}finally{stopPending=false;controls();}}
-  ui.start.addEventListener('click',start);ui.end.addEventListener('click',()=>endSession());ui.stop.addEventListener('click',stop);
+  ui.start.addEventListener('click',()=>{userEnded=false;reconnectAttempts=0;start();});ui.end.addEventListener('click',()=>endSession());ui.stop.addEventListener('click',stop);
   $('composer').addEventListener('submit',e=>{e.preventDefault();send(ui.message.value);});ui.message.addEventListener('input',controls);ui.message.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send(ui.message.value);}});
   ui.suggestions.addEventListener('click',e=>{const b=e.target.closest('[data-prompt]');if(b)send(b.dataset.prompt);});
   ui.mic.addEventListener('click',()=>talk.toggle());ui['mic-lang'].addEventListener('click',()=>talk.switchLanguage());
@@ -473,4 +495,5 @@
   window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
   voiceQueue.setEnabled(voiceQueue.enabled);
   controls();
+  start();
 })();

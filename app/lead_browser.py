@@ -30,10 +30,12 @@ async def one(locator, description, click=False):
 async def walkthrough(worker, feature):
     key=feature['id'];page=worker.page
     if key in {'add_lead','bulk_upload','lead_sources'}:
-        await worker.open_feature({**feature,'id':'add_lead' if key=='lead_sources' else key})
+        fields=await worker.open_feature({**feature,'id':'add_lead' if key=='lead_sources' else key})
         if key=='lead_sources':
             await one(page.locator('ng-select[formcontrolname="leadSource"]'),'Lead source')
             return 'The Source control on Add Lead is visible.'
+        if key=='add_lead':
+            return 'The Add Lead form is open. I will save only after you confirm the details.'
         return 'The requested form is visible.'
     list_controls={
         'search':'#search-dropdown input', 'columns':'.show-hide-gray ng-select',

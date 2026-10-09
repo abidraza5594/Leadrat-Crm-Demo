@@ -1,0 +1,18 @@
+{
+  "id": "leadrat",
+  "adapter": "leadrat",
+  "features_file": "features.json",
+  "workspace_features": ["leads", "projects", "properties", "tasks", "dashboard"],
+  "module_topics": {
+    "leads": ["Lead Management"],
+    "projects": ["Project"],
+    "properties": ["Properties"],
+    "task": ["Task"],
+    "dashboard": ["Dashboard"]
+  },
+  "descriptions": {
+    "leads": "How to manage leads in the CRM. General lead management, enquiries, sales pipeline and the leads list.",
+    "bulk_upload": "Import active leads into the Leads module. This is separate from raw prospect datasets in the Data Management module.",
+    "add_lead": "Show how to add one new enquiry; collect required details and request confirmation before creating a lead."
+  }
+}

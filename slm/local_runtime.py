@@ -26,7 +26,9 @@ def ensure_local_model():
     python = ROOT / '.venv-train/Scripts/python.exe'
     if not python.is_file(): raise RuntimeError('Beacon training environment is missing')
     env = dict(os.environ)
-    env['PYTHONPATH'] = os.pathsep.join([str(ROOT), str(ROOT / '.venv/Lib/site-packages')])
+    # Keep the training environment's CUDA torch ahead of the web server's
+    # CPU-only embedding dependencies. The latter supplies shared web packages.
+    env['PYTHONPATH'] = os.pathsep.join([str(ROOT), str(ROOT / '.venv-train/Lib/site-packages'), str(ROOT / '.venv/Lib/site-packages')])
     env['HF_HUB_OFFLINE'] = env['TRANSFORMERS_OFFLINE'] = '1'
     logs = ROOT / 'artifacts'; logs.mkdir(exist_ok=True)
     with (logs / 'local-model.stdout.log').open('a', encoding='utf8') as stdout, (logs / 'local-model.stderr.log').open('a', encoding='utf8') as stderr:

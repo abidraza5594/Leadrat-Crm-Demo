@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app import main
 from app.qualification import Facts,qualify
-from app.planner import Plan,shortcut,declined
+from app.planner import Plan,declined
 
 def test_decline_overrides_forty():
     facts=Facts(organisation='developer',agents=3,monthly_leads=50,pain_count=1,process='satisfied_crm',influence='none',intent='declined')
@@ -27,8 +27,6 @@ def test_decline_overrides_high_fit_and_unknowns():
 def test_no_arbitrary_tool_or_selector():
     with pytest.raises(ValueError):Plan(feature='delete',demo=True)
     with pytest.raises(ValueError):Plan(feature='leads',demo=True,selector='body')
-    assert shortcut('show leads').feature=='leads'
-    assert shortcut('show leads then delete all') is None
     assert declined("Don't contact me again")
 
 class Worker:
@@ -176,6 +174,9 @@ def test_new_question_interrupts_running_demo(client):
     assert r.status_code==202
     snap=client.get(path,headers=h).json()
     assert [m['text'] for m in snap['messages'] if m['role']=='user']==['show leads','hi']
+    deadline=time.monotonic()+3
+    while snap['busy'] and time.monotonic()<deadline:
+        time.sleep(.02);snap=client.get(path,headers=h).json()
     assert snap['messages'][-1]['text'].startswith('Hello!')
     client.delete(path,headers=h)
 

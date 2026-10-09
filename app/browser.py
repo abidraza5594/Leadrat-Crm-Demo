@@ -234,6 +234,11 @@ class BrowserWorker:
                 discard=page.locator('save-changes').get_by_role('button',name=re.compile(r'^Discard$',re.I))
                 if await discard.count()==1 and await discard.is_visible():await discard.click()
             await self.check_popups()
+            if module=='leads' and urlsplit(page.url).path.rstrip('/')=='/leads/manage-leads':
+                listing=page.locator('manage-leads')
+                if await listing.count()==1 and await listing.is_visible():
+                    self.demo_form_signature=None
+                    return 'Leads is already open. The visible workspace was verified.'
             choices=[page.locator('a.nav-item').filter(has_text=re.compile(r'^\s*'+re.escape(label)+r'\s*$',re.I)),
                 page.locator('.module-navbar a').filter(has_text=re.compile(r'^\s*'+re.escape(label)+r'\s*$',re.I)),
                 page.locator(f'[data-ai-nav-route="{module}"]')]
@@ -245,7 +250,10 @@ class BrowserWorker:
                 if target is not None:break
             if target is None:raise DemoError(f'{label} is not visible or permitted in this sandbox account.')
             await target.click()
-            await page.wait_for_url(lambda url:urlsplit(str(url)).path.startswith('/'+module),timeout=12000)
+            # /leads/add-lead also starts with /leads; wait for the actual list
+            # before trying to open another control from its toolbar.
+            await page.wait_for_url(lambda url:(urlsplit(str(url)).path.rstrip('/')=='/leads/manage-leads'
+                if module=='leads' else urlsplit(str(url)).path.startswith('/'+module)),timeout=20000)
             if await page.get_by_text(re.compile('access denied|not authorized',re.I)).count():raise DemoError('The CRM denied access to this screen.')
             if not await self.signed_in():raise DemoError('The CRM session expired. The demo stopped.')
             self.demo_form_signature=None
@@ -280,7 +288,7 @@ class BrowserWorker:
             if len(visible)!=1:raise DemoError('The expected entry control is not uniquely visible. No alternate action was attempted.')
             await visible[0].click()
             if feature['id']=='add_lead':
-                await page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"]').first.wait_for(state='visible',timeout=10000)
+                await page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"]').first.wait_for(state='visible',timeout=20000)
                 fields=page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"],input[formcontrolname="email"]')
                 labels=[]
                 for i in range(min(await fields.count(),8)):
@@ -296,7 +304,12 @@ class BrowserWorker:
     async def close(self):
         self.closed=True
         # Keep tokens the CRM refreshed during this session for the next hidden browser.
-        if self.context and await self.authenticated():await self.save_state()
-        if self.context:await self.context.close()
-        if self.browser:await self.browser.close()
-        if self.pw:await self.pw.stop()
+        from contextlib import suppress
+        with suppress(Exception):
+            if self.context and await self.authenticated():await self.save_state()
+        # A failed page/state operation must never strand the Chromium process
+        # or its Playwright transport after the session ends.
+        for resource,method in ((self.context,'close'),(self.browser,'close'),(self.pw,'stop')):
+            if resource:
+                with suppress(Exception):await getattr(resource,method)()
+        self.context=self.browser=self.pw=None

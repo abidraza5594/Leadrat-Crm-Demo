@@ -164,3 +164,39 @@ Submitted all 70 questions through the actual widget. All reviewed answers obser
 105 automated checks passed (7 dependency/Windows cleanup warnings). Response latency in customer scenarios remained approximately 26–127 seconds including contention. During startup only ~0.5–0.7 GB system RAM was free. Recommended: supervised demo of verified scope, not a claim that all product workflows or arbitrary paraphrases are reliable. Previous training Excel is unchanged.
 
 Evidence: artifacts/pdf-questions-2026-10-04.json (before); artifacts/pdf-questions-final-2026-10-04.json; artifacts/pdf-ui-2026-10-04.json (all attempts, including failure and retest); artifacts/pdf-voice-2026-10-04.json; artifacts/customers-2026-10-04.json; artifacts/customers-retest-2026-10-04.json; artifacts/customers-final-2026-10-04.json; artifacts/live-demo-final-2026-10-04.json. Human-readable report: outputs/demo-readiness-2026-10-04/Beacon_Demo_Checks.html.
+
+## 2026-10-06: confirmed lead creation and connection/speech fixes
+- Added a name -> international phone -> optional email -> displayed review -> explicit confirmation flow for creating one lead through the test CRM UI. Repeated confirmation after an uncertain save cannot submit again; changed forms require a new review. Creation turns are excluded from visitor sales qualification.
+- Live CRM created two clearly marked synthetic leads: Beacon Test 20261006 Creation Check (5299596d-9042-46aa-aae0-d20416fcee49) and Beacon Test 20261006 Final Check (4ff56957-09c2-4447-9bf9-370953f319c0). Both received succeeded=true; the first was independently found by exact name in Leads. The final conversation reported success correctly. No existing records were deleted.
+- Background local-model startup; requirements installation cached by file hash; session polls no longer wait for CRM login refresh. Observed workspace startup 3.94 seconds and maximum poll duration 1.063 seconds in one live run; these are measurements, not latency guarantees.
+- Speech defaults to an editable preview; auto-send is optional, with a longer pause. Browser test injects recognition events and verifies preview/edit/manual send/auto-send; actual acoustic transcription accuracy was not measured.
+- Excel-only reply is recorded as tooling and prompts for the actual difficulty; late business-type replies are retained.
+- Validation: 208 automated tests passed, 8 cleanup/dependency warnings. JS syntax check passed. Evidence: artifacts/lead-create-final-2026-10-06.json and artifacts/fixes-2026-10-06-live.json. Existing unsupported walkthrough coverage is unchanged.
+
+## 2026-10-06: interactive latency optimization
+- Product-only navigation and greetings no longer start sales extraction; customer facts still schedule trained-model extraction after a 600 ms debounce. Existing extraction is not cancelled by pure navigation.
+- Handbook index warmed in the background, verified Leads workspace reused, idle/busy polling changed from 700/150 ms to 300/100 ms. Shortened duplicate Add Lead narration. Whisper experiment stopped on request; no Whisper STT integration enabled.
+- 211 automated tests passed (5 cleanup/dependency warnings). Live API smoke after restart: workspace ready 3.687 s; text first reply 0.015-0.031 s for hi/Show Leads/Show Tasks, excluding browser polling and audio; completed Leads demos 0.203/0.234 s; Tasks 0.656 s. Not an end-to-end spoken latency guarantee. Earlier baseline Site Visit test could not complete because that session's lead list had no visible records; no overall before/after percentage claimed.
+- Evidence: artifacts/performance-after.json, artifacts/navigation-after.json, artifacts/performance-tests-2026-10-06.log.
+## Preview startup — 2026-10-06
+
+- Server now prepares one fresh CRM browser before a visitor starts. It is handed to one session only; ending that session prepares a new browser. No previous visitor's screenshot or browser is reused.
+- Prepared sessions return ready immediately after checking sign-in. Voice setup runs independently of preview rendering.
+- Full suite: **216 passed, 3 warnings** (dependency/Windows cleanup warnings). JavaScript syntax check passed. Regression checks include failed/cancelled warm-up cleanup and a stalled voice setup that must not block preview requests.
+- Actual Chrome tests against an isolated test service using the same CRM: first visible preview at **4.551 s, 0.365 s, 1.006 s** from widget navigation. The last two session creation requests took **79 ms and 579 ms**. These samples are not a guarantee; cold preparation and CRM/network delays can still take several seconds.
+- Latest timing: `artifacts/preview-timing-2026-10-06.json`; screenshot: `artifacts/preview-ready-2026-10-06.png`; test log: `artifacts/preview-tests-2026-10-06.log`. Test service stopped; primary Beacon service remains running with the change.
+# Latest live validation — 2026-10-06
+
+The new context-driven candidate is **not demo-ready**. Five direct latest-v4 adapter calls returned truncated results at 120–123 seconds. A selected seven-case context test timed out; visible `Show leads` and `I am a developer` turns both fell back after about 27 seconds, with no requested action recorded. The actual CRM preview was visible. Main server was not switched to this candidate.
+
+Full application checks: 120 passed (2 Windows cleanup warnings); final focused checks after additional changes: 28 passed. These are overlapping contract/regression checks, not model accuracy. Historical report percentages above are not replaced by these timeout results. With the other GPU process finished, the adapter recheck remained incomplete at 120.84 seconds; after restarting Beacon's model runtime it returned the explicit deadline error at 120.89 seconds. Full evidence and limitations: [live check](docs/LIVE_CHECK_2026-10-06.md).
+
+
+## 2026-10-06 — final context-engine follow-up
+
+- Main build now uses Qwen3-4B-Instruct-2507 Q4_K_M for conversation decisions and the unchanged current Beacon v4 adapter on Qwen2.5-1.5B for qualification. No hosted LLM was enabled.
+- Real diagnostic decisions: 22/22 selected cases passed. These prompts were used during development; this is not held-out general accuracy.
+- Visible main website: 11-turn conversation, verified Leads/Projects navigation, final checked customer fields and consent refusal passed. Preview 3.339 seconds; median reply 15.199 seconds; background v4 extraction about 52 seconds.
+- Final narrow unsupported-job-level guard was verified separately against the captured result and focused tests, then loaded into the running server.
+- Full suite 141 passed with five Windows subprocess-cleanup warnings; subsequent focused suite 34 passed (overlapping). No change to historical training percentages/workbooks.
+- Local demonstration only: latency, PostgreSQL deployment, multi-user operation and full live handbook/voice coverage remain unapproved. See [detailed evidence and limitations](docs/LIVE_CHECK_2026-10-06.md).

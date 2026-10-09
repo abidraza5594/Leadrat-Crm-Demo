@@ -52,9 +52,11 @@ def query_terms(question):
     return list({stem(w): [stem(w)] + [stem(x) for x in SYNONYMS.get(w, [])] for w in words}.items())
 
 @lru_cache(maxsize=1)
-def load():
+def load(directory=None):
     """Chunks: {id, module, section, page, source, text}. Empty when no document is installed."""
-    pdfs = sorted(DOCS_DIR.glob('*.pdf')) if DOCS_DIR.is_dir() else []
+    from pathlib import Path
+    folder=Path(directory) if directory else DOCS_DIR
+    pdfs = sorted(folder.glob('*.pdf')) if folder.is_dir() else []
     chunks = []
     for pdf in pdfs:
         from pypdf import PdfReader
@@ -150,30 +152,9 @@ async def compose(question, evidence):
     # Emails and phone numbers in a question are not needed to answer it and are not sent.
     question = re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+|\+?\d[\d -]{8,}\d', '[redacted]', question)
     user = json.dumps({'question': question, 'reference_excerpts': excerpts}, ensure_ascii=False)
-    if config.PROVIDER == 'local':
-        from .local_model import complete
-        text = json.dumps(await complete([{'role':'system','content':SYSTEM},
-            {'role':'user','content':user}], SCHEMA, max_tokens=280))
-    elif config.PROVIDER == 'openai':
-        from .planner import USAGE
-        key = os.environ.get('OPENAI_API_KEY', '')
-        if not key: raise ValueError('Hosted model key is not configured')
-        if USAGE['requests'] >= int(os.getenv('OPENAI_MAX_TEST_CALLS', '30')): raise ValueError('Testing call limit reached')
-        USAGE['requests'] += 1
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5)) as client:
-            result = await client.post('https://api.openai.com/v1/responses', headers={'Authorization': 'Bearer ' + key}, json={
-                'model': config.OPENAI_MODEL, 'store': False, 'max_output_tokens': 400, 'reasoning': {'effort': 'low'},
-                'input': [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': user}],
-                'text': {'format': {'type': 'json_schema', 'name': 'beacon_grounded_answer', 'strict': True, 'schema': SCHEMA}}})
-            result.raise_for_status(); data = result.json()
-            for k in ['input_tokens', 'output_tokens']: USAGE[k] += data.get('usage', {}).get(k, 0)
-            text = ''.join(c.get('text', '') for item in data.get('output', []) if item.get('type') == 'message' for c in item.get('content', []) if c.get('type') == 'output_text')
-    else:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45, connect=3)) as client:
-            result = await client.post(config.OLLAMA_URL + '/api/chat', json={'model': config.MODEL, 'stream': False, 'format': SCHEMA, 'keep_alive': '30m',
-                'options': {'temperature': 0, 'num_predict': 180, 'num_ctx': 4096, 'num_gpu': config.NUM_GPU},
-                'messages': [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': user}]})
-            result.raise_for_status(); text = result.json()['message']['content']
+    from .local_model import complete
+    text = json.dumps(await complete([{'role':'system','content':SYSTEM},
+        {'role':'user','content':user}], SCHEMA, max_tokens=280))
     reply = json.loads(text)
     if not isinstance(reply.get('supported'), bool) or not isinstance(reply.get('answer'), str) or not isinstance(reply.get('excerpts_used'), list):
         raise ValueError('Invalid grounded answer')
@@ -183,7 +164,7 @@ async def compose(question, evidence):
 
 def answer_mode():
     # A local CPU model takes tens of seconds on this much context; extractive keeps voice latency usable.
-    return os.getenv('DOCS_ANSWER', 'llm' if config.PROVIDER == 'openai' else 'extractive')
+    return os.getenv('DOCS_ANSWER', 'extractive')
 
 async def answer(question):
     """{'grounded': bool, 'text': str, 'sources': [chunk ids], 'mode': str}. Never raises."""
@@ -194,19 +175,6 @@ async def answer(question):
         return {'grounded':True,'text':reviewed['answer']+' '+cite(reviewed),
                 'sources':ids,'mode':'reviewed_handbook'}
     mode = answer_mode()
-    # These short operational questions have a reviewed screen guide. Generic
-    # term retrieval ("bulk" / "lead") can otherwise return unrelated masters.
-    from .planner import shortcut, romanize, FEATURES
-    direct=shortcut(romanize(question))
-    if direct and direct.feature in {'bulk_upload','bulk_update','site_visit','meeting'}:
-        feature=FEATURES[direct.feature]
-        text=' '.join(feature['facts'])
-        if re.search(r'\b(delete|remove)\b',question,re.I):
-            text=('For bulk deletion, first review the selected leads and your account permissions. '
-                  'I can highlight the selection control on the Leads list. The bulk-delete action itself '
-                  'is not verified in this demo; I will not open a deletion confirmation or delete any records.')
-        return {'grounded':True,'text':text,
-                'sources':[feature['source']],'mode':'reviewed_screen_guide'}
     # The installed handbook describes publishing workflows, not a verified provider list
     # or customer-support timetable. Related keyword hits cannot answer these questions.
     if mode == 'extractive' and (

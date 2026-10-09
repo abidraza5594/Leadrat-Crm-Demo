@@ -27,28 +27,15 @@ def open_site_when_ready():
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('--openai',action='store_true',help='use the OpenAI planner regardless of .env')
-    parser.add_argument('--ollama',action='store_true',help='use the local Ollama planner regardless of .env')
     parser.add_argument('--no-browser',action='store_true',help='do not open the test website')
     args=parser.parse_args()
     load_dotenv(ROOT/'.env')
-    if args.openai:os.environ['PLANNER_PROVIDER']='openai'
-    if args.ollama:os.environ['PLANNER_PROVIDER']='ollama'
-    provider=os.environ.setdefault('PLANNER_PROVIDER','ollama').strip().lower()
-    if provider=='local':
-        from slm.local_runtime import ensure_local_model
-        print('Loading the current Beacon model locally...', flush=True)
-        ensure_local_model()
-    if provider=='openai':
-        model=os.environ.setdefault('OPENAI_MODEL','gpt-6-luna')
-        if not os.getenv('OPENAI_API_KEY','').strip():
-            os.environ['OPENAI_API_KEY']=getpass.getpass('OpenAI API key (put OPENAI_API_KEY in .env to skip this): ')
-        os.environ['OPENAI_API_KEY']=os.environ['OPENAI_API_KEY'].strip()
-        try:
-            result=httpx.get('https://api.openai.com/v1/models/'+model,headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},timeout=15)
-            print('OpenAI model access:',model,result.status_code)
-            if result.status_code!=200:raise SystemExit('Model access could not be verified (check OPENAI_API_KEY in .env). No model was substituted.')
-        except httpx.HTTPError:raise SystemExit('Model access check failed; retry when connectivity is available.')
+    os.environ.setdefault('BEACON_PREWARM_BROWSER','1')
+    os.environ.setdefault('BEACON_WARM_KNOWLEDGE','1')
+    provider=os.environ.setdefault('PLANNER_PROVIDER','local').strip().lower()
+    if provider!='local':raise SystemExit('Beacon uses local models only. Set PLANNER_PROVIDER=local.')
+    os.environ['BEACON_START_LOCAL_MODEL']='1'
+    print('Starting Beacon; local models will load in the background...',flush=True)
     saved_login=Path(os.getenv('BEACON_BROWSER_STATE',ROOT/'.browser'/'crm-state.json')).is_file()
     if not (os.getenv('BEACON_LOGIN_USER','').strip() and os.getenv('BEACON_LOGIN_PASSWORD')) and not saved_login:
         user=input('Test CRM username (put BEACON_LOGIN_USER/PASSWORD in .env to skip; blank to sign in with login.ps1): ').strip()

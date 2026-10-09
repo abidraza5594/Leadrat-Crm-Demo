@@ -1,4 +1,5 @@
 .venv/
+.venv-stt/
 .env
 __pycache__/
 .pytest_cache/
@@ -12,6 +13,9 @@ node_modules/
 artifacts/*
 !artifacts/.gitkeep
 .browser/
+.state/
+.models/
+.tools/
 
 # Company-internal product docs and the index built from them
 knowledge/docs/

@@ -1,0 +1,19 @@
+services:
+  conversation-db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: beacon
+      POSTGRES_USER: beacon
+      POSTGRES_PASSWORD: ${BEACON_DB_PASSWORD:?Run setup-database.ps1 first}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - beacon-context-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beacon -d beacon"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  beacon-context-postgres:

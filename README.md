@@ -5,12 +5,12 @@ Python backend + an embeddable HTML website widget. The backend owns a hidden, i
 ## Start on this Windows machine
 
 1. **One time:** open `.env` and fill `BEACON_LOGIN_USER` and `BEACON_LOGIN_PASSWORD` (test CRM account only). `.env` is git-ignored: never commit or share it. Wrap a value containing `#`, `$` or spaces in single quotes.
-2. Open PowerShell in `C:\Leadrat AI\Beacon` and run **`./start.ps1`**. It installs application dependencies, verifies/starts the current local model (port 8012), starts the test website (port 8011) in the background and Beacon (port 8010) in this window, then opens **http://localhost:8011** when ready. It asks only for a value that is missing from `.env`.
-3. On the website choose **Start exploring**, then **Start a session**. The hidden demo browser signs in (or reuses the login saved in `.browser/crm-state.json`), and the live CRM appears on the left of the popup with the chat on the right.
-4. **Type or speak.** Type in the box, or tap **🎤** once: Beacon then listens all the time. Your words appear in the box as you speak and are sent when you pause. Speak (or type) while Beacon is talking or running a demo and it stops at once and does the new request; say "stop" / "ruko" / "bas" to just silence it. Tap 🎤 again to stop listening. **🗣 English / हिन्दी** picks the language you speak. Headphones work best. Voice is on by default and reads every reply; the **Voice** button turns it off (both remembered per browser). End the session when done; its browser context and conversation are discarded.
-5. **Ctrl+C** stops the website/backend servers. The reusable local model service stays loaded on port 8012.
+2. Open PowerShell in `C:\Leadrat AI\Beacon` and run **`./start.ps1`**. It installs application dependencies, verifies/starts the current adapter (port 8012) and separate conversation model (port 8014), starts the test website (port 8011) in the background and Beacon (port 8010) in this window, then opens **http://localhost:8011** when ready. It asks only for a value that is missing from `.env`.
+3. On the website choose **Start exploring**, and the session starts automatically. The hidden demo browser signs in (or reuses the login saved in `.browser/crm-state.json`), and the live CRM appears on the left of the popup with the chat on the right.
+4. **Type or speak.** Type in the box, or tap **🎤** once: Beacon then listens all the time. Your words appear in the box as you speak and can be reviewed before sending; automatic sending after a pause is optional. Speak (or type) while Beacon is talking or running a demo and it stops at once and does the new request; say "stop" / "ruko" / "bas" to just silence it. Tap 🎤 again to stop listening. **🗣 English / हिन्दी** picks the language you speak. Headphones work best. Voice is on by default and reads every reply; the **Voice** button turns it off (both remembered per browser). End the session when done; its browser context closes. Project-scoped audit snapshots expire after seven days.
+5. **Ctrl+C** stops the website/backend servers. The reusable local model services stay loaded on ports 8012 and 8014.
 
-Options: `./start.ps1 -Ollama` uses the free local planner (same as `PLANNER_PROVIDER=ollama` in `.env`), `-OpenAI` forces OpenAI, `-NoBrowser` does not open the website. `./start-test-page.ps1` still runs the website on its own. **Sign in manually** (for example when the account asks for two-factor verification) with `./login.ps1`: it opens a visible Chrome window once, saves the login when the CRM opens, and closes. A session that is already waiting picks the login up automatically. Credentials stay in process memory so the hidden browser can sign in again if the saved login expires. Install Google Chrome first. The servers bind to loopback only.
+Options: `./start.ps1 -NoBrowser` does not open the website. OpenAI/Ollama provider switches have been removed. `./start-test-page.ps1` still runs the website on its own. **Sign in manually** (for example when the account asks for two-factor verification) with `./login.ps1`: it opens a visible Chrome window once, saves the login when the CRM opens, and closes. A session that is already waiting picks the login up automatically. Credentials stay in process memory so the hidden browser can sign in again if the saved login expires. Install Google Chrome first. The servers bind to loopback only.
 
 `HEADLESS=false` in `.env` additionally shows the demo browser as a separate window, for debugging only. `.browser/crm-state.json` contains CRM auth tokens: keep it on this machine and delete it to force a fresh sign-in.
 
@@ -20,11 +20,11 @@ The `.env` on this machine selects the user-designated test URL. `.env.example` 
 
 - FastAPI session API with random session capability tokens, registered website origins, one active browser, 15-minute interaction-idle timeout and 30-minute maximum lifetime.
 - A server-owned Playwright browser executes fixed navigation capabilities; the visitor receives pixels, not CRM credentials or browser-control access.
-- Current configuration uses local Qwen2.5-1.5B: the verified v4 adapter extracts customer qualification JSON; the same base model, with the adapter disabled, handles constrained feature classification and handbook answers. OpenAI is not used in this configuration. Common requests still use reviewed shortcuts. `/api/health` exposes the actual adapter hash and local-model readiness.
+- Qwen3-4B-Instruct-2507 Q4_K_M selects conversation intent and reviewed demo capabilities. The latest v4 adapter on its original Qwen2.5-1.5B base extracts customer qualification JSON. They are separate models; the adapter is not attached to the 4B base. No hosted LLM fallback or regex demo routing is used. `/api/health` exposes adapter identity and both models' readiness. See [current architecture](docs/CONTEXT_ENGINE.md) and [live verification](docs/LIVE_CHECK_2026-10-06.md).
 - The model selects a catalogue entry; user-facing facts come from the reviewed catalogue, not unrestricted generation. Navigation must be observed before success is narrated. Missing/ambiguous controls stop the action. There is no generic click, JS execution, URL, save, delete, upload or send tool available to the model.
 - Stop cancels pending inference/action execution. Failed and cancelled steps are distinct from verified steps. Browser controls are fixed in `app/browser.py`; Lead adapters and popup policy are in `app/lead_browser.py` and `app/popups.py`; source-backed explanations are in `app/lead_guides.py` and `knowledge/features.json`.
 - Optional neural narration: `TTS_PROVIDER=edge` uses a keyless online test speech connector (not a production availability guarantee). Only issued assistant guide replies are spoken. The browser displays a disclosure and falls back visibly to browser speech if unavailable. `TTS_PROVIDER=local` with `TTS_URL` supports an OpenAI-compatible local Kokoro `/audio/speech` service; Kokoro is not installed in this build.
-- Explicit declines route to `graceful_close`, even when the calculated score is 40 or higher. Unknown scoring fields remain null/ranges. Qualification tries a configured adapter endpoint, then hosted extraction, then conservative rules. Hosted facts use a strict JSON schema and local score calculation. Handoffs require consent and contact details; the default destination is the local mock receiver.
+- Explicit declines route to `graceful_close`, even when the calculated score is 40 or higher. Unknown scoring fields remain null/ranges. Qualification uses the local trained adapter, with a conservative human-review result if unavailable. Accepted visitor facts constrain the final JSON, and scores are calculated locally. Handoffs require consent and contact details; the default destination is the local mock receiver.
 
 The current published qualification adapter is the **v4 continuation (1 October 2026)** in `slm/runs/kaggle-v4-continued/adapter`, published to `abidansari5594/beacon-qualification-qwen2.5-1.5b-qlora`. `slm/current_release.json` records its verified weight hash and revision. It continued v3 on 10,611 conversations for one additional epoch. The previous v3 adapter remains in `slm/runs/kaggle/adapter` for comparison. Run `python slm/continue_latest.py --out slm/runs/next --data-dir slm/data/v4 --epochs 1` for future training; it resolves the latest published adapter before continuing its weights. Publishing does not switch the live website's qualification model.
 
@@ -50,11 +50,11 @@ Keep `LOCAL_DEVICE_LOCATION=false` on servers. A public remote browser cannot ob
 | Area | Current browser action |
 |---|---|
 | Leads | Open and verify list |
-| Add Lead | Open form, inspect visible name/email controls; no submission |
+| Add Lead | Collect details, review them, require explicit confirmation, then verify creation in the test CRM; never retry an uncertain save |
 | Bulk upload | Open entry screen; no file selection/import |
 | Projects, Properties, Tasks, Dashboard | Open and verify module |
-| Sources, status, communications | Grounded overview and Leads entry point; nested workflows are not automated |
-| Unknown features, scheduling, deletion, arbitrary instructions | No invented workflow; explain the coverage boundary |
+| Status, site visits and reviewed lead operations | Show supported controls; existing records and appointments are not saved. Unsupported operations are labelled as overview-only |
+| Unknown features and unsupported changes | Clarify coverage; no invented controls, deletion, messaging or arbitrary instructions |
 
 This is an executable local vertical slice, **not completion of the full design document**. Remaining work includes deeper verified persona workflows, approved full-product RAG/pgvector ingestion, server-side speech recognition (browser recognition is used now), installed local Kokoro, independently evaluated qualification adapter, consented mock handoff/outbox, load/latency evaluation, and public deployment security.
 
@@ -93,19 +93,13 @@ The 🎤 button uses the browser's built-in speech recognition (Chrome and Edge;
 
 ## Grounded answers from the company handbook
 
-Put the company-provided documentation PDF (FLOE Leadrat Pre-Sales Product Knowledge Handbook) in `knowledge/docs/`. It is internal, so `knowledge/docs/` is git-ignored. At start-up `app/docs.py` extracts the text, splits it into module/section chunks of about 500 characters (question-only lists are excluded) and indexes them with BM25 plus light stemming, a small synonym list and Hinglish romanisation. Nothing is a hand-written answer.
+Put the company-provided handbook PDF in `knowledge/docs/` (internal, git-ignored). The conversation model first selects the product topic and reviewed capability. Source-reviewed feature facts and topic-constrained handbook passages supply the answer; insufficient evidence produces a clarification instead of a guessed capability. Quantized multilingual ONNX embeddings are cached locally or in PostgreSQL/pgvector.
 
-A question that is not a screen Beacon can show, and any question-style turn during a demo, is answered from the handbook:
-
-1. Retrieve the best chunks. Weak evidence (low score or less than 40–60% of the question's words present) returns the fixed "I don't know" reply.
-2. With `PLANNER_PROVIDER=openai`, the model gets up to five excerpts marked as untrusted data, must answer only from them, returns `supported` and the excerpt numbers it used, and the reply cites that excerpt's module and page. Unsupported or uncited answers become the "I don't know" reply.
-3. Without a hosted model (or if it fails), the reply is the best-matching handbook sentences, with the source (`DOCS_ANSWER=extractive`).
-
-Evaluation: `python eval/groundedness.py --mode llm` (or `--mode extractive`) runs 30 answerable and 20 unanswerable questions from `eval/groundedness.jsonl` and saves every answer to `eval/results/` for hand review.
+Install the pinned files once using `python slm/setup_planner.py` and `python slm/setup_knowledge.py` in the application environment. First-time model downloads need internet; normal local language-model inference does not. `eval/context_engine.py` measures real conversation decisions; unit tests measure application contracts. Neither proves every handbook action works. Some topics have an explanation but no supported demo.
 
 ## Current local adapter service
 
-`PLANNER_PROVIDER=local`, `QUAL_SLM_MODEL=beacon-v4`, `QUAL_SLM_FORMAT=full` use the current release from `slm/current_release.json`. `operator_start.py` starts `slm/serve_local.py` in `.venv-train` and verifies the adapter SHA-256. The cached base model and CUDA are required; inference does not download models or call a hosted LLM. Ports 8010, 8011 and 8012 bind only to this machine. Edge voice remains a separate speech service.
+`PLANNER_PROVIDER=local`, `QUAL_SLM_MODEL=beacon-v4`, `QUAL_SLM_FORMAT=full` use the current release from `slm/current_release.json`. `operator_start.py` starts `slm/serve_local.py` in `.venv-train` and verifies the adapter SHA-256. The cached base model and CUDA are required; inference does not download models or call a hosted LLM. Ports 8010, 8011, 8012 and 8014 bind only to this machine. Edge voice remains a separate speech service.
 
 The adapter is trained for structured customer facts, not free-form CRM narration. The application re-calculates its score and route from validated facts. Model failure falls back to conservative rules; no hosted model is substituted. GPU requests are serialized and bounded. A cancelled request may finish generation on the GPU before the next request runs.
 

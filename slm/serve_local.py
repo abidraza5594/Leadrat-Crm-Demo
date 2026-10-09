@@ -5,16 +5,18 @@ os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
 import hashlib
 import json
 import threading
+import asyncio
 import time
 from contextlib import nullcontext
 from pathlib import Path
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request as HTTPRequest
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, StoppingCriteria, StoppingCriteriaList
 from peft import PeftModel
 import uvicorn
+from slm.runtime_options import choose_precision
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = json.loads((ROOT / 'slm/current_release.json').read_text())
@@ -30,6 +32,11 @@ lock = threading.Lock()
 slots = threading.BoundedSemaphore(2)
 model = tokenizer = None
 precision = 'loading'
+active_generation=None
+
+class CancelGeneration(StoppingCriteria):
+    def __init__(self,event):self.event=event
+    def __call__(self,input_ids,scores,**kwargs):return self.event.is_set()
 
 class Message(BaseModel):
     role: str
@@ -49,7 +56,7 @@ def load():
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER, local_files_only=True)
     if tokenizer.pad_token_id is None: tokenizer.pad_token = tokenizer.eos_token
     free_bytes, _ = torch.cuda.mem_get_info()
-    precision = 'float16' if free_bytes >= 3.6 * 1024**3 else 'nf4-float16'
+    precision=choose_precision(free_bytes,os.getenv('BEACON_MODEL_PRECISION','auto'))
     options = {} if precision == 'float16' else {'quantization_config':BitsAndBytesConfig(
         load_in_4bit=True,bnb_4bit_quant_type='nf4',bnb_4bit_compute_dtype=torch.float16)}
     print('GPU mode:', precision, 'free MiB', round(free_bytes/2**20), flush=True)
@@ -65,8 +72,8 @@ def health():
     return {'ready': model is not None, 'qualification_model': QUAL_MODEL, 'base_model': BASE_MODEL,
             'weights_sha256': SHA, 'revision': RELEASE['revision'], 'precision':precision, 'external_llm_calls': False}
 
-@app.post('/v1/chat/completions')
-def completion(body: Request):
+def generate(body,cancel):
+    global active_generation
     if body.model not in (QUAL_MODEL, BASE_MODEL): raise HTTPException(400, 'Unknown model')
     if model is None: raise HTTPException(503, 'Model is loading')
     if any(m.role not in ('system', 'user', 'assistant') for m in body.messages):
@@ -74,6 +81,8 @@ def completion(body: Request):
     if not slots.acquire(blocking=False): raise HTTPException(429, 'Local model is busy')
     try:
         with lock:
+            if cancel.is_set():raise HTTPException(499,'Request cancelled')
+            active_generation=(body.model,cancel)
             # Windows OpenMP settings must also be applied in the inference worker.
             torch.set_num_threads(4)
             started = time.monotonic()
@@ -87,15 +96,44 @@ def completion(body: Request):
             adapter_context = nullcontext() if body.model == QUAL_MODEL else model.disable_adapter()
             with adapter_context, torch.inference_mode():
                 output = model.generate(**batch, max_new_tokens=body.max_tokens, do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id, logits_to_keep=1, max_time=120)
+                    pad_token_id=tokenizer.pad_token_id, logits_to_keep=1, max_time=120,
+                    stopping_criteria=StoppingCriteriaList([CancelGeneration(cancel)]))
+            if cancel.is_set():raise HTTPException(499,'Request cancelled')
+            eos=model.generation_config.eos_token_id or tokenizer.eos_token_id
+            eos_ids=eos if isinstance(eos,list) else [eos]
+            finished=output[0,-1].item() in eos_ids
+            elapsed=time.monotonic()-started
+            if not finished and elapsed>=120:
+                # A truncated structured response is not a successful completion.
+                # Report unavailability so qualification does not retry the same
+                # two-minute generation as though it were a formatting mistake.
+                del output,batch
+                raise HTTPException(504,'Local generation deadline exceeded')
             content = tokenizer.decode(output[0, batch['input_ids'].shape[1]:], skip_special_tokens=True)
             print('Generation complete:', body.model, 'tokens', output.shape[1]-batch['input_ids'].shape[1],
                   'seconds', round(time.monotonic()-started, 2), flush=True)
             del output, batch
             return {'model': body.model, 'weights_sha256': SHA if body.model == QUAL_MODEL else None,
-                    'choices': [{'message': {'role': 'assistant', 'content': content}}]}
+                    'choices': [{'finish_reason':'stop' if finished else 'length',
+                                 'message': {'role': 'assistant', 'content': content}}]}
     finally:
+        if active_generation and active_generation[1] is cancel:active_generation=None
         slots.release()
+
+@app.post('/v1/chat/completions')
+async def completion(body: Request,request:HTTPRequest):
+    # A timed-out/disconnected client must not leave a long generation occupying
+    # the GPU. Interactive guidance can interrupt background qualification.
+    if body.model==BASE_MODEL and active_generation and active_generation[0]==QUAL_MODEL:
+        active_generation[1].set()
+    cancel=threading.Event()
+    async def watch():
+        while not cancel.is_set():
+            if await request.is_disconnected():cancel.set();return
+            await asyncio.sleep(.1)
+    watcher=asyncio.create_task(watch())
+    try:return await asyncio.to_thread(generate,body,cancel)
+    finally:cancel.set();watcher.cancel()
 
 if __name__ == '__main__':
     load()

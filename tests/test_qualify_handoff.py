@@ -15,7 +15,7 @@ def test_forced_invalid_json_walks_the_ladder_to_rules(monkeypatch):
     async def fake_chat(url, model, msgs, headers=None): return '{"ok": true}'
     monkeypatch.setattr(qualify, '_chat', fake_chat)
     result = asyncio.run(qualify.qualify_session(chat('We are a brokerage with 25 agents and about 600 leads a month.')))
-    assert [a['step'] for a in result['attempts']] == ['slm', 'slm', 'hosted', 'rules']
+    assert [a['step'] for a in result['attempts']] == ['slm', 'slm', 'rules']
     assert result['attempts'][0]['result'] in {'no_json', 'invalid_json'} and result['source'] == 'rules'
     q = result['qualification']
     assert q['organisation'] == {'name': None, 'type': 'brokerage', 'agents': 25} and q['monthly_leads'] == {'min': 600, 'max': 600}
@@ -75,34 +75,13 @@ def test_discovery_asks_one_unknown_at_a_time_then_closes_with_contact():
     assert len(asked) == len(main.DISCOVERY)+1 and asked[0].startswith('To tailor the demo')
     assert asked[-1].startswith('Would you like someone from Leadrat to contact you')
 
-def test_hosted_model_never_sees_email_or_phone(monkeypatch):
-    seen = []
-    async def hosted(msgs):
-        seen.append(json.dumps(msgs)); return '{}'
-    monkeypatch.setattr(qualify, '_hosted', hosted)
-    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
-    asyncio.run(qualify.qualify_session(chat('yes call me, rohan@acme.example.com or +91 90000 01234')))
-    assert seen and 'rohan@acme' not in seen[0] and '90000 01234' not in seen[0] and 'private-contact-1@redacted.invalid' in seen[0]
-
-def test_hosted_facts_keep_withdrawn_contact_removed(monkeypatch):
-    from slm.labels import Extraction
-    async def hosted(msgs):
-        return json.dumps(Extraction(consent=True).model_dump())
-    monkeypatch.setattr(qualify, '_hosted', hosted)
-    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
-    result = asyncio.run(qualify.qualify_session(chat('Contact me at a@example.com.', 'That email is wrong; remove it.')))
-    assert result['source'] == 'hosted'
-    assert result['qualification']['contact']['email'] is None
-
-def test_hosted_selects_corrected_contact_without_revealing_it(monkeypatch):
-    from slm.labels import Extraction, Contact
-    async def hosted(msgs):
-        assert 'new@example.com' not in json.dumps(msgs)
-        return json.dumps(Extraction(contact=Contact(email='private-contact-2@redacted.invalid')).model_dump())
-    monkeypatch.setattr(qualify, '_hosted', hosted)
-    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
-    result = asyncio.run(qualify.qualify_session(chat('a@example.com.', 'Correction: use new@example.com.')))
-    assert result['qualification']['contact']['email'] == 'new@example.com'
+def test_no_hosted_inference_fallback_even_with_legacy_key(monkeypatch):
+    monkeypatch.setenv('OPENAI_API_KEY','should-never-be-used')
+    async def forbidden(*args,**kwargs):raise AssertionError('Unexpected HTTP call')
+    monkeypatch.setattr(httpx.AsyncClient,'post',forbidden)
+    result=asyncio.run(qualify.qualify_session(chat('Contact me at a@example.com.')))
+    assert result['source']=='rules'
+    assert all(a['step']!='hosted' for a in result['attempts'])
 
 def test_email_sentence_punctuation_is_not_part_of_address():
     q=qualify.rules_extract(qualify.transcript_of(chat('Write to a@example.com.')))
@@ -110,10 +89,11 @@ def test_email_sentence_punctuation_is_not_part_of_address():
 
 def test_explicit_final_decline_overrides_stale_model_decision(monkeypatch):
     from slm.labels import Extraction
-    async def hosted(msgs):
+    async def local(*args,**kwargs):
         return json.dumps(Extraction(consent=True,next_step='within_30_days').model_dump())
-    monkeypatch.setattr(qualify, '_hosted', hosted)
-    monkeypatch.delenv('QUAL_SLM_URL', raising=False)
+    monkeypatch.setattr(qualify,'_chat',local)
+    monkeypatch.setenv('QUAL_SLM_URL','http://slm.invalid/v1')
+    monkeypatch.setenv('QUAL_SLM_MODEL','beacon-v4')
     result = asyncio.run(qualify.qualify_session(chat('I want a demo.', 'I changed my mind. Do not contact me.')))
     q = result['qualification']
     assert q['consent'] is False and q['next_step'] == 'declined' and q['route'] == 'graceful_close'

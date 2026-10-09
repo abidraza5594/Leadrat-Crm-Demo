@@ -1,0 +1,105 @@
+[
+  {
+    "case": "complete customer",
+    "transcript": [
+      {
+        "turn_id": 1,
+        "speaker": "visitor",
+        "text": "I am a property developer with 30 sales agents and 2000 new leads per month. We use Excel manually and miss follow-ups. I decide on the CRM purchase and want it within 30 days. I have not agreed to sales contact."
+      }
+    ],
+    "raw_output": "{\"role\":\"property developer\",\"seniority\":\"owner\",\"organisation\":{\"name\":null,\"type\":\"developer\",\"agents\":30},\"pain_points\":[\"missed follow-ups\"],\"current_tooling\":[\"Excel\"],\"process\":\"manual\",\"geography\":{\"countries\":null,\"cities\":null},\"monthly_leads\":{\"min\":2000,\"max\":2000},\"lead_sources\":null,\"influence\":\"approver\",\"next_step\":\"within_30_days\",\"consent\":false,\"contact\":{\"name\":null,\"email\":null,\"phone\":null},\"evidence\":{\"role\":[1],\"seniority\":[1],\"organisation.type\":[1],\"organisation.agents\":[1],\"monthly_leads\":[1],\"pain_points\":[1],\"current_tooling\":[1],\"process\":[1],\"influence\":[1],\"next_step\":[1]},\"schema_version\":\"beacon.qualification.v1\",\"icp_score\":80,\"score_range\":[80,80],\"score_rationale\":[{\"dimension\":\"organisation\",\"points\":20,\"evidence_turn_ids\":[1]},{\"dimension\":\"agents\",\"points\":15,\"evidence_turn_ids\":[1]},{\"dimension\":\"monthly_leads\",\"points\":15,\"evidence_turn_ids\":[1]},{\"dimension\":\"pain\",\"points\":10,\"evidence_turn_ids\":[1]},{\"dimension\":\"process\",\"points\":10,\"evidence_turn_ids\":[1]},{\"dimension\":\"influence\",\"points\":10,\"evidence_turn_ids\":[1]},{\"dimension\":\"next_step\",\"points\":10,\"evidence_turn_ids\":[1]}],\"route\":\"nurture\"}",
+    "expected": {
+      "organisation.type": "developer",
+      "organisation.agents": 30,
+      "monthly_leads.min": 2000,
+      "monthly_leads.max": 2000,
+      "process": "manual",
+      "influence": "approver",
+      "next_step": "within_30_days",
+      "consent": false,
+      "contact.email": null,
+      "contact.phone": null,
+      "seniority": "unknown",
+      "icp_score": 90
+    }
+  },
+  {
+    "case": "short contextual replies",
+    "transcript": [
+      {
+        "turn_id": 1,
+        "speaker": "beacon",
+        "text": "Are you a brokerage, developer or channel partner?"
+      },
+      {
+        "turn_id": 2,
+        "speaker": "visitor",
+        "text": "developer"
+      },
+      {
+        "turn_id": 3,
+        "speaker": "beacon",
+        "text": "How many people are on your sales team?"
+      },
+      {
+        "turn_id": 4,
+        "speaker": "visitor",
+        "text": "300"
+      },
+      {
+        "turn_id": 5,
+        "speaker": "beacon",
+        "text": "Roughly how many new leads do you get in a month?"
+      },
+      {
+        "turn_id": 6,
+        "speaker": "visitor",
+        "text": "100k"
+      },
+      {
+        "turn_id": 7,
+        "speaker": "beacon",
+        "text": "What do you use to manage leads today?"
+      },
+      {
+        "turn_id": 8,
+        "speaker": "visitor",
+        "text": "Excel"
+      }
+    ],
+    "raw_output": "{\"role\":null,\"seniority\":\"unknown\",\"organisation\":{\"name\":null,\"type\":\"developer\",\"agents\":300},\"pain_points\":null,\"current_tooling\":[\"Excel\"],\"process\":\"manual\",\"geography\":{\"countries\":null,\"cities\":null},\"monthly_leads\":{\"min\":100000,\"max\":100000},\"lead_sources\":null,\"influence\":\"unknown\",\"next_step\":\"unknown\",\"consent\":false,\"contact\":{\"name\":null,\"email\":null,\"phone\":null},\"evidence\":{\"organisation.type\":[2],\"organisation.agents\":[4],\"monthly_leads\":[6],\"current_tooling\":[8],\"process\":[8]},\"schema_version\":\"beacon.qualification.v1\",\"icp_score\":null,\"score_range\":[60,100],\"score_rationale\":[{\"dimension\":\"organisation\",\"points\":20,\"evidence_turn_ids\":[2]},{\"dimension\":\"agents\",\"points\":15,\"evidence_turn_ids\":[4]},{\"dimension\":\"monthly_leads\",\"points\":15,\"evidence_turn_ids\":[6]},{\"dimension\":\"pain\",\"points\":null,\"evidence_turn_ids\":[]},{\"dimension\":\"process\",\"points\":10,\"evidence_turn_ids\":[8]},{\"dimension\":\"influence\",\"points\":null,\"evidence_turn_ids\":[]},{\"dimension\":\"next_step\",\"points\":null,\"evidence_turn_ids\":[]}],\"route\":\"human_review\"}",
+    "expected": {
+      "organisation.type": "developer",
+      "organisation.agents": 300,
+      "monthly_leads.min": 100000,
+      "monthly_leads.max": 100000,
+      "process": "manual",
+      "consent": false
+    }
+  },
+  {
+    "case": "corrected facts",
+    "transcript": [
+      {
+        "turn_id": 1,
+        "speaker": "visitor",
+        "text": "We are a brokerage with 300 sales agents and 5000 monthly leads."
+      },
+      {
+        "turn_id": 2,
+        "speaker": "visitor",
+        "text": "Correction: 30 sales agents and 2000 monthly leads. My name is Demo Person."
+      }
+    ],
+    "raw_output": "{\"role\":null,\"seniority\":\"unknown\",\"organisation\":{\"name\":null,\"type\":\"brokerage\",\"agents\":30},\"pain_points\":null,\"current_tooling\":null,\"process\":\"unknown\",\"geography\":{\"countries\":null,\"cities\":null},\"monthly_leads\":{\"min\":2000,\"max\":2000},\"lead_sources\":null,\"influence\":\"unknown\",\"next_step\":\"unknown\",\"consent\":false,\"contact\":{\"name\":null,\"email\":null,\"phone\":null},\"evidence\":{\"organisation.agents\":[2],\"organisation.type\":[2],\"monthly_leads\":[2]},\"schema_version\":\"beacon.qualification.v1\",\"icp_score\":null,\"score_range\":[40,80],\"score_rationale\":[{\"dimension\":\"organisation\",\"points\":20,\"evidence_turn_ids\":[2]},{\"dimension\":\"agents\",\"points\":15,\"evidence_turn_ids\":[2]},{\"dimension\":\"monthly_leads\",\"points\":10,\"evidence_turn_ids\":[2]},{\"dimension\":\"pain\",\"points\":null,\"evidence_turn_ids\":[]},{\"dimension\":\"process\",\"points\":null,\"evidence_turn_ids\":[]},{\"dimension\":\"influence\",\"points\":null,\"evidence_turn_ids\":[]},{\"dimension\":\"next_step\",\"points\":null,\"evidence_turn_ids\":[]}],\"route\":\"human_review\"}",
+    "expected": {
+      "organisation.type": "brokerage",
+      "organisation.agents": 30,
+      "monthly_leads.min": 2000,
+      "monthly_leads.max": 2000,
+      "contact.name": "Demo Person",
+      "consent": false
+    }
+  }
+]

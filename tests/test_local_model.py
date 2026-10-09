@@ -3,15 +3,6 @@ import json
 from app import planner, docs, qualify, local_model
 from slm.prompting import SYSTEM
 
-def test_local_planner_uses_local_completion(monkeypatch):
-    seen=[]
-    monkeypatch.setattr(planner.config,'PROVIDER','local')
-    async def complete(messages,schema,max_tokens):
-        seen.append(messages)
-        return {'feature':'tasks','demo':True}
-    monkeypatch.setattr(local_model,'complete',complete)
-    plan,source=asyncio.run(planner.classify('where are my upcoming tasks?',None))
-    assert plan.feature=='tasks' and source.startswith('local:') and len(seen)==1
 
 def test_local_docs_require_boolean_support(monkeypatch):
     monkeypatch.setattr(docs.config,'PROVIDER','local')
@@ -62,6 +53,16 @@ def test_personal_name_is_not_a_job_title():
     result=qualify._done(q,'slm',[],time.monotonic(),[{'speaker':'visitor','turn_id':1,'text':'My name is Ravi. We have 12 agents.'}])['qualification']
     assert result['contact']['name']=='Ravi' and result['role'] is None and result['seniority']=='unknown'
 
+
+def test_real_estate_developer_does_not_imply_employee_seniority():
+    import time
+    from slm.labels import Extraction,complete
+    q=complete(Extraction(role='developer',seniority='individual_contributor'))
+    result=qualify._done(q,'slm',[],time.monotonic(),[{'speaker':'visitor','turn_id':1,'text':'I am a developer.'}])['qualification']
+    assert result['seniority']=='unknown' and 'seniority' not in result['evidence']
+    stated=qualify._done(q,'slm',[],time.monotonic(),[{'speaker':'visitor','turn_id':1,'text':'I am a sales agent.'}])['qualification']
+    assert stated['seniority']=='individual_contributor'
+
 def test_absent_permission_is_not_an_explicit_decline():
     import time
     from slm.labels import Extraction, complete
@@ -85,3 +86,18 @@ def test_company_duration_does_not_set_demo_timing():
     q=complete(Extraction(next_step='unknown'))
     result=qualify._done(q,'slm',[],time.monotonic(),[{'speaker':'visitor','turn_id':1,'text':'We have been operating for three months.'}])['qualification']
     assert result['next_step']=='unknown'
+
+
+def test_generation_deadline_does_not_repeat_long_request_or_claim_trained_result(monkeypatch):
+    import httpx
+    monkeypatch.setenv('QUAL_SLM_URL','http://local.invalid/v1')
+    monkeypatch.setenv('QUAL_SLM_MODEL','beacon-v4')
+    attempts=[]
+    async def expired(*args,**kwargs):
+        attempts.append(1)
+        response=httpx.Response(504,request=httpx.Request('POST','http://local.invalid/v1/chat/completions'))
+        response.raise_for_status()
+    monkeypatch.setattr(qualify,'_chat',expired)
+    result=asyncio.run(qualify.qualify_session([{'role':'user','text':'We are a developer with 30 agents.'}]))
+    assert len(attempts)==1 and result['source']=='rules'
+    assert result['qualification']['route']=='human_review'

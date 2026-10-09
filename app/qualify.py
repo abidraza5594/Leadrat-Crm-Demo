@@ -1,11 +1,10 @@
-"""Live qualification with the fallback ladder from the design doc.
+"""Local qualification with strict validation and a conservative review fallback.
 
-1. Fine-tuned SLM (any OpenAI-compatible endpoint: QUAL_SLM_URL + QUAL_SLM_MODEL, e.g. Ollama) → strict parse and
+1. Fine-tuned local SLM (QUAL_SLM_URL + QUAL_SLM_MODEL) → strict parse and
    validation; one retry on invalid output.
-2. Hosted model (PLANNER_PROVIDER=openai, within the call budget) with the same prompt.
-3. Deterministic rules extractor: only plainly stated facts (organisation words, "N agents", "N leads",
+2. Deterministic review fallback: only plainly stated facts (organisation words, "N agents", "N leads",
    explicit declines, typed email/phone). Consent is never inferred, so rules alone cannot produce a handoff.
-4. Rules results, and anything left incomplete, route to human_review (declines still close gracefully).
+3. Rules results, and anything left incomplete, route to human_review (declines still close gracefully).
 Score, range and route are always re-derived from the extracted facts with the approved ICP rules.
 QUAL_FORCE_INVALID=1 replaces the SLM output with broken JSON to demonstrate the ladder.
 """
@@ -14,9 +13,10 @@ import re
 import time
 import httpx
 from . import config
-from .planner import declined, romanize, USAGE
+from .planner import declined, romanize
 from slm.labels import Extraction, complete
 from slm.prompting import facts_messages, messages as trained_messages, parse_facts, parse, rescore
+EXCLUDED_KINDS={'ack','lead_creation','product_question','product_answer','customer_ack','unverified_input'}
 
 def extraction_schema():
     schema = Extraction.model_json_schema()
@@ -41,56 +41,26 @@ def transcript_of(session_messages):
     """Session chat → numbered turns (voice-only acknowledgements excluded)."""
     turns = []
     for m in session_messages:
-        if m.get('kind') == 'ack': continue
+        if m.get('kind') in EXCLUDED_KINDS: continue
         turns.append({'turn_id': len(turns) + 1, 'speaker': 'visitor' if m['role'] == 'user' else 'beacon', 'text': m['text']})
     return turns
 
 async def _chat(url, model, msgs, headers=None):
+    from urllib.parse import urlsplit
+    if urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'}:
+        raise ValueError('The trained adapter endpoint must be local')
     async with httpx.AsyncClient(timeout=httpx.Timeout(float(os.getenv('QUAL_SLM_TIMEOUT', '40')), connect=3)) as client:
         r = await client.post(url.rstrip('/') + '/chat/completions', headers=headers or {}, json={
             'model': model, 'messages': msgs, 'temperature': 0, 'max_tokens': 900})
         r.raise_for_status()
         return r.json()['choices'][0]['message']['content']
 
-async def _hosted(msgs):
-    key = os.environ.get('OPENAI_API_KEY', '')
-    if config.PROVIDER != 'openai' or not key: raise ValueError('hosted model not configured')
-    if USAGE['requests'] >= int(os.getenv('OPENAI_MAX_TEST_CALLS', '30')): raise ValueError('call budget reached')
-    USAGE['requests'] += 1
-    async with httpx.AsyncClient(timeout=httpx.Timeout(40, connect=5)) as client:
-        r = await client.post('https://api.openai.com/v1/responses', headers={'Authorization': 'Bearer ' + key}, json={
-            'model': config.OPENAI_MODEL, 'store': False, 'input': msgs, 'max_output_tokens': 1500,
-            'reasoning': {'effort': 'low'}, 'text': {'format': {'type': 'json_schema',
-                'name':'beacon_customer_facts', 'strict':True, 'schema':extraction_schema()}}})
-        r.raise_for_status(); data = r.json()
-        for k in ['input_tokens', 'output_tokens']: USAGE[k] += data.get('usage', {}).get(k, 0)
-        return ''.join(c.get('text', '') for i in data.get('output', []) if i.get('type') == 'message'
-                       for c in i.get('content', []) if c.get('type') == 'output_text')
-
 EMAIL = r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+'
 PHONE = r'\+?\d[\d -]{8,}\d'
-CONTACT = re.compile(EMAIL + '|' + PHONE)
 
-def private_transcript(turns):
-    """Keep distinct contact references so corrections/removals survive redaction."""
-    mapping = {}
-    reverse = {}
-    def hide(match):
-        value = match.group(0)
-        if value not in reverse:
-            index = str(len(mapping) + 1)
-            token = 'private-contact-' + index + '@redacted.invalid' if '@' in value else '[redacted-phone-' + index + ']'
-            mapping[token] = value
-            reverse[value] = token
-        return reverse[value]
-    return [{**t, 'text': CONTACT.sub(hide, t['text'])} for t in turns], mapping
 
 def qualification_prompt(turns):
-    msgs = facts_messages(turns)
-    msgs[0]['content'] += (' Contact placeholders such as private-contact-1@redacted.invalid or [redacted-phone-1] represent private contact details. '
-        'Copy the exact placeholder into contact.email or contact.phone only if the visitor currently offers it as their contact. '
-        'If withdrawn, incorrect or someone else\'s, return null. Consent must be false when absent or withdrawn.')
-    return msgs
+    return facts_messages(turns)
 
 def parse_extraction(text, turns):
     q, reason = parse_facts(text, turns)
@@ -190,7 +160,7 @@ def anchor(q, turns):
     return q.model_copy(update={**update, 'evidence': evidence})
 
 async def qualify_session(session_messages):
-    """{'qualification': dict, 'source': slm|hosted|rules, 'attempts': [...], 'ms': int}. Never raises."""
+    """{'qualification': dict, 'source': slm|rules, 'attempts': [...], 'ms': int}. Never raises."""
     started = time.monotonic(); turns = transcript_of(session_messages); msgs = qualification_prompt(turns); attempts = []
     url, model = os.getenv('QUAL_SLM_URL', ''), os.getenv('QUAL_SLM_MODEL', '')
     if os.getenv('QUAL_SLM_FORMAT') == 'full': msgs = trained_messages(turns)
@@ -207,22 +177,6 @@ async def qualify_session(session_messages):
             if reason and reason.startswith('unavailable'): break
     else:
         attempts.append({'step': 'slm', 'result': 'not_configured'})
-    try:
-        # Contact details never leave for the hosted model; they are re-attached from the transcript locally.
-        redacted, contact_map = private_transcript(turns)
-        q, reason = parse_extraction(await _hosted(qualification_prompt(redacted)), redacted)
-        attempts.append({'step': 'hosted', 'result': reason or 'ok'})
-        if q is not None:
-            # Resolve only model-selected placeholders grounded in visitor turns.
-            visitor_contacts = {m.group(0) for t in turns if t['speaker'] == 'visitor' for m in CONTACT.finditer(t['text'])}
-            restored = {}
-            for field, pattern in [('email', EMAIL), ('phone', PHONE)]:
-                value = contact_map.get(getattr(q.contact, field))
-                restored[field] = value if value in visitor_contacts and re.fullmatch(pattern, value or '') else None
-            q = q.model_copy(update={'contact': q.contact.model_copy(update=restored)})
-            return _done(rescore(anchor(q, turns)), 'hosted', attempts, started, turns)
-    except Exception as exc:
-        attempts.append({'step': 'hosted', 'result': 'unavailable:' + str(exc)[:60]})
     q = complete(rules_extract(turns))
     # Low confidence: the rules scorer can close a decline, but never qualifies a lead on its own.
     if q.route != 'graceful_close': q = q.model_copy(update={'route': 'human_review'})
@@ -296,6 +250,11 @@ def _done(q, source, attempts, started, turns):
                 update['role']=None;evidence.pop('role',None)
             q=q.model_copy(update=update)
             attempts.append({'step':'validation','result':'unsupported_owner_title_removed'})
+        if q.seniority=='individual_contributor' and not re.search(
+            r"\b(?:i am|i'm|my role is|i work as)\s+(?:an?\s+)?(?:individual contributor|sales agent|salesperson|sales rep(?:resentative)?|sales executive)\b",text,re.I):
+            evidence=dict(q.evidence);evidence.pop('seniority',None)
+            q=q.model_copy(update={'seniority':'unknown','evidence':evidence})
+            attempts.append({'step':'validation','result':'unsupported_individual_title_removed'})
     if visitor and declined(visitor[-1]['text']):
         tid = visitor[-1]['turn_id']
         q = rescore(q.model_copy(update={'next_step':'declined','consent':False,

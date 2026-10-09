@@ -121,7 +121,7 @@ def test_durable_storage_is_scoped_by_project_and_session(tmp_path):
 
 
 def test_wrong_topic_search_cannot_override_capability_answer(monkeypatch):
-    async def irrelevant(*args):return [(0.99,{'id':9,'module':'Data Management','section':'Purpose and overview','page':9,'text':'Bulk prospects'})]
+    async def irrelevant(*args,**kwargs):return [(0.99,{'id':9,'module':'Data Management','section':'Purpose and overview','page':9,'text':'Bulk prospects'})]
     monkeypatch.setattr(main.knowledge,'retrieve',irrelevant)
     result=asyncio.run(main.knowledge.answer('manage leads',Decision(kind='product',feature='leads',topic='Lead Management',demo=True),FEATURES))
     assert 'Bulk prospects' not in result['text'] and result['grounded']

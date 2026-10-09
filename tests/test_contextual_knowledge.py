@@ -6,7 +6,7 @@ def knowledge(completion):
     k=SemanticKnowledge(completion=completion);k.ready=True
     k.documents=[{'id':1,'module':'Inventory','section':'Purpose and overview','text':'Tracks available units.','page':3},
                  {'id':2,'module':'Work orders','section':'Purpose and overview','text':'Tracks assigned work.','page':5}]
-    async def retrieve(*args):return [(0.8,k.documents[0])]
+    async def retrieve(*args,**kwargs):return [(0.8,k.documents[0])]
     k.retrieve=retrieve
     return k
 
@@ -31,7 +31,7 @@ def test_followup_context_is_supplied_to_search_and_answer():
         body=json.loads(messages[-1]['content']);assert body['conversation']==history
         return {'supported':True,'answer':'Inventory tracks available units.','evidence_ids':['doc:1#0'],'demo_requested':False,'evidence_quotes':[{'source_id':'doc:1#0','quote':'Tracks available units.'}]}
     k=knowledge(complete)
-    async def retrieve(question,topic=None):calls.append((question,topic));return [(0.8,k.documents[0])]
+    async def retrieve(question,topic=None,**kwargs):calls.append((question,topic));return [(0.8,k.documents[0])]
     k.retrieve=retrieve
     asyncio.run(k.answer('Explain that further',Decision(kind='product'),{},history=history))
     assert calls[0][0]=='Explain that further' and 'available inventory' in calls[1][0]
@@ -92,3 +92,18 @@ def test_verifier_outage_does_not_publish_unchecked_draft():
         return {'supported':True,'answer':'Potential draft','evidence_ids':['doc:1#0'],'demo_requested':False,'evidence_quotes':[{'source_id':'doc:1#0','quote':'Tracks available units.'}]}
     result=asyncio.run(knowledge(complete).answer('A question',Decision(kind='product'),{}))
     assert not result['grounded'] and result['error']=='TimeoutError'
+
+def test_support_playbook_is_used_only_when_the_visitor_reports_a_problem():
+    playbook={'id':7,'module':'Inventory','section':'Troubleshooting matrix','text':'Check permissions before concluding units are missing.','page':4}
+    seen=[]
+    async def complete(messages,schema,**kw):
+        if 'valid' in schema['properties']:return {'valid':True,'reason':''}
+        seen.append({r['id'].split('#')[0] for r in json.loads(messages[-1]['content'])['references']})
+        return {'supported':True,'answer':'Inventory tracks available units.','evidence_ids':['doc:1#0'],'demo_requested':False}
+    k=knowledge(complete)
+    async def retrieve(*args,**kwargs):return [(0.9,playbook),(0.8,k.documents[0])]
+    k.retrieve=retrieve
+    asyncio.run(k.answer('What does inventory do?',Decision(kind='product'),{}))
+    asyncio.run(k.answer('Why are units not showing in inventory?',Decision(kind='product'),{}))
+    assert 'doc:7' not in seen[0] and 'doc:1' in seen[0]
+    assert 'doc:7' in seen[1]

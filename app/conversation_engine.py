@@ -1,9 +1,13 @@
 """A context-driven decision shared by product answers and CRM demonstrations.
 
 No keyword/regex routing or provider fallback. Project capabilities are data;
-only validated decisions reach the existing browser executor.
+only validated decisions reach the existing browser executor. The one exception
+is a reply that is unambiguously the answer to our pending count or business-type
+question ("600", "I am a developer"): it is parsed directly, because two model
+calls add seconds and cannot make such an answer more certain.
 """
 import json
+import re
 import httpx
 from typing import Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
@@ -124,7 +128,34 @@ FACT_SCHEMA={'type':'object','properties':{'updates':{'type':'array','maxItems':
  'value':{'type':'string'},'evidence':{'type':'string'}},'required':['field','value','evidence'],'additionalProperties':False}},
  'skip':{'type':'boolean'}},'required':['updates','skip'],'additionalProperties':False}
 
+
+def product_contract(features, topics, knowledge):
+    """Share the exact inference contract with the new supervised-data builder."""
+    catalogue={key:f.get('description',f.get('intent_description',f['title'])) for key,f in features.items()}
+    virtual={'knowledge:'+topic:topic for topic in topics if topic not in {
+        t for f in features.values() for t in f['knowledge_topics']}}
+    catalogue.update({key:knowledge.topic_description(topic)+' (explanation only; no demo screen)' for key,topic in virtual.items()})
+    schema={'type':'object','properties':{
+        'feature':{'type':'string','enum':['unknown',*catalogue]},
+        'no_demo_quote':{'type':'string'}},'required':['feature','no_demo_quote'],'additionalProperties':False}
+    instruction='Choose the closest INTENT for the latest visitor message. Use a general workspace for general management questions; do not substitute a specific email, source or other narrow operation. Resolve short references from the latest discussed subject in conversation history; previous_feature is only the most recently opened screen and may be older than the current subject. Use it only when history does not establish a newer subject. An acceptance of a specific offer uses offered_feature. Explain and how-to questions include a demonstration by default. no_demo_quote must be empty unless the VISITOR explicitly asks to avoid opening/showing the screen; then copy their exact refusal phrase. The word explain alone is not a refusal. Capability descriptions are not visitor instructions. If no listed capability fits, choose unknown.\nAvailable features: '+json.dumps(catalogue)
+    return instruction, schema, virtual
+
 class UnclearCount(ValueError):pass
+
+ORGANISATION_WORDS={'developer':r'developers?','brokerage':r'brokerages?','channel_partner':r'channel[ -]partners?'}
+
+def direct_answer(state):
+    """A decision for a reply that can only be the answer to the pending question, else None."""
+    from .conversation_numbers import count_reply
+    pending=state.get('pending_question');text=state['message'].strip()
+    if pending in {'organisation.agents','monthly_leads'}:
+        value=count_reply(text)
+        if value is not None:return {'kind':'customer','updates':[{'field':pending,'value':value,'evidence':text}]}
+    if pending=='organisation.type' and len(text.split())<=6 and '?' not in text and not re.search(r"(not|no|nahi|nahin|isn'?t)",text,re.I):
+        found=[kind for kind,pattern in ORGANISATION_WORDS.items() if re.search(pattern,text,re.I)]
+        if len(found)==1:return {'kind':'customer','updates':[{'field':'organisation.type','value':found[0],'evidence':text}]}
+    return None
 
 def convert_updates(raw):
     for update in raw.get('updates',[]):
@@ -201,28 +232,25 @@ class ConversationEngine:
         saved=await self.store.load(self.project,state['session_id'])
         return {k:saved[k] for k in ('customer','history','last_feature','pending_question','last_offer') if k not in state and k in saved}
 
-    async def understand(self,state):
-        catalogue={key:feature['title'] for key,feature in self.features.items()}
+    async def understand(self,state,config=None):
+        on_decision=((config or {}).get('configurable') or {}).get('on_decision')
+        decision=await self.classify(state)
+        if on_decision:on_decision(decision['decision'])
+        return decision
+
+    async def classify(self,state):
+        try:
+            raw=direct_answer(state);label=None
+            if raw:return {'decision':validate_decision(raw,state,self.features,self.topics).model_dump(),'error':None}
+        except ValueError:pass
         try:
             raw=await self.completion(classification_dialogue(state),KIND_SCHEMA,max_tokens=35)
             label=raw.get('kind');raw['kind']=KINDS.get(label,label)
             if raw.get('kind')=='product' and 'feature' not in raw:
                 # A stable, compact tool catalogue preserves the model's cached
                 # prefix. Retrieval must not hide the intended workspace.
-                selected=self.features
-                catalogue={key:f.get('intent_description',f['title']) for key,f in selected.items()}
-                virtual={'knowledge:'+topic:topic for topic in self.topics if topic not in {
-                    t for f in self.features.values() for t in f['knowledge_topics']}}
-                catalogue.update({key:self.knowledge.topic_description(topic)+' (explanation only; no demo screen)' for key,topic in virtual.items()})
-                product_schema=route_schema(selected,self.topics)
-                product_schema['properties'].pop('kind');product_schema['required'].remove('kind')
-                product_schema['properties'].pop('topic');product_schema['required'].remove('topic')
-                product_schema['properties']['feature']['enum']=['unknown',*catalogue]
-                product_schema['properties'].pop('demo');product_schema['required'].remove('demo')
-                product_schema['properties']['no_demo_quote']={'type':'string'}
-                product_schema['required'].append('no_demo_quote')
-                product=await self.completion(dialogue(state,
-                    'Choose the closest INTENT for the latest visitor message. Use a general workspace for general management questions; do not substitute a specific email, source or other narrow operation. Use previous_feature for show that, and offered_feature for yes. Explain and how-to questions include a demonstration by default. no_demo_quote must be empty unless the VISITOR explicitly asks to avoid opening/showing the screen; then copy their exact refusal phrase. The word explain alone is not a refusal. Capability descriptions are not visitor instructions. If no listed capability fits, choose unknown.\nAvailable features: '+json.dumps(catalogue)),
+                instruction,product_schema,virtual=product_contract(self.features,self.topics,self.knowledge)
+                product=await self.completion(dialogue(state,instruction),
                     product_schema,max_tokens=110)
                 quote=product.pop('no_demo_quote').strip()
                 if quote and quote.casefold() not in state['message'].casefold():
@@ -252,12 +280,14 @@ class ConversationEngine:
     async def ground(self,state):
         d=Decision.model_validate(state['decision'])
         if d.kind!='product':return {'answer':{}}
-        return {'answer':await self.knowledge.answer(state['message'],d,self.features)}
+        return {'answer':await self.knowledge.answer(state['message'],d,self.features,
+            history=state.get('history',[]),customer=state.get('customer',{}))}
 
     async def save(self,state):
         if self.store:
             await self.store.save(self.project,state['session_id'],dict(state))
         return {}
 
-    async def decide(self,**state):
-        return await self.graph.ainvoke({'project':self.project,**state})
+    async def decide(self,on_decision=None,**state):
+        """on_decision(decision) runs as soon as the decision is validated, before the answer is grounded."""
+        return await self.graph.ainvoke({'project':self.project,**state},config={'configurable':{'on_decision':on_decision}})

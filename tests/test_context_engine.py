@@ -31,13 +31,34 @@ def test_context_contains_pending_question_history_offer_and_facts(monkeypatch):
         monkeypatch.setattr(main.engine,'completion',complete)
         s=main.Session(pending_discovery='monthly_leads',last_feature='leads',offer='status',discovery_answers={'organisation.agents':300})
         s.say('Roughly how many new leads do you get in a month?')
-        await main.execute(s,'100k')
+        await main.execute(s,'maybe 100k or so')
         assert 'Roughly how many' in seen[0][-1]['content']
-        context=main.conversation_context(s,'100k')
+        context=main.conversation_context(s,'maybe 100k or so')
         assert context['customer']['organisation.agents']==300 and context['last_offer']=='status'
         assert s.discovery_answers['monthly_leads']==100000 and not s.steps
         if s.qual_task:s.qual_task.cancel()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('pending,message,field,value',[
+    ('monthly_leads','10000','monthly_leads',10000),('organisation.agents','600','organisation.agents',600),
+    ('organisation.type','i am developer','organisation.type','developer'),
+    ('organisation.type','we are a channel partner','organisation.type','channel_partner')])
+def test_plain_answer_to_pending_question_needs_no_model_call(monkeypatch,pending,message,field,value):
+    async def complete(*args,**kwargs):raise AssertionError('A plain answer must not wait for the model')
+    monkeypatch.setattr(main.engine,'completion',complete)
+    async def run():
+        s=main.Session(pending_discovery=pending)
+        await main.execute(s,message)
+        assert s.discovery_answers[field]==value and s.pending_discovery!=pending
+        if s.qual_task:s.qual_task.cancel()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('message',['how do developers use leads?','not a developer'])
+def test_questions_and_negations_still_go_to_the_model(monkeypatch,message):
+    from app.conversation_engine import direct_answer
+    assert direct_answer({'pending_question':'organisation.type','message':message}) is None
 
 
 @pytest.mark.parametrize('raw',[
@@ -100,7 +121,7 @@ def test_durable_storage_is_scoped_by_project_and_session(tmp_path):
 
 
 def test_wrong_topic_search_cannot_override_capability_answer(monkeypatch):
-    async def irrelevant(*args):return [(0.99,{'id':9,'module':'Data Management','text':'Bulk prospects'})]
+    async def irrelevant(*args):return [(0.99,{'id':9,'module':'Data Management','section':'Purpose and overview','page':9,'text':'Bulk prospects'})]
     monkeypatch.setattr(main.knowledge,'retrieve',irrelevant)
     result=asyncio.run(main.knowledge.answer('manage leads',Decision(kind='product',feature='leads',topic='Lead Management',demo=True),FEATURES))
     assert 'Bulk prospects' not in result['text'] and result['grounded']

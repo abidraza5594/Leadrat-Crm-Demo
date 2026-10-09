@@ -4,6 +4,7 @@ Example: python slm/continue_latest.py --out slm/runs/next --data-dir slm/data/v
 """
 import hashlib
 import json
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = 'abidansari5594/beacon-qualification-qwen2.5-1.5b-qlora'
 
 def main():
+    release_file = ROOT / 'slm/current_release.json'
+    release=json.loads(release_file.read_text('utf-8')) if release_file.exists() else {}
+    if release.get('status') == 'retired' or release.get('runtime') == 'llamacpp':
+        raise SystemExit('Old adapter continuation is disabled. The next training run must use Qwen3-4B with a new adapter.')
     if '--init-adapter' in sys.argv or '--format' in sys.argv:
         raise SystemExit('This entrypoint always loads the current published adapter and uses its full format.')
     info=HfApi().model_info(REPO,files_metadata=True)

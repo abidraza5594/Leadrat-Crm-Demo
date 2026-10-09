@@ -31,5 +31,19 @@ def isolated_conversation_model(monkeypatch,tmp_path):
         if message not in rows:raise AssertionError('No fake model decision supplied for '+message)
         return rows[message]
     monkeypatch.setattr(main.engine,'completion',complete)
+    # Application-flow tests do not perform real model inference or embed PDFs.
+    # Grounded generation itself has separate contract and real-model checks.
+    async def no_retrieval(*args,**kwargs):return []
+    async def grounded_answer(messages,schema,**kwargs):
+        if 'valid' in schema.get('properties',{}):return {'valid':True,'reason':''}
+        payload=json.loads(messages[-1]['content'])
+        refs=payload['references']
+        capability=next((r for r in refs if r['id'].startswith('capability:')),None)
+        return {'supported':bool(capability),'answer':capability['text'] if capability else 'No documented answer.',
+                'evidence_ids':[capability['id']] if capability else [],'demo_requested':False,
+                'evidence_quotes':[{'source_id':capability['id'],'quote':capability['text']}] if capability else []}
+    monkeypatch.setattr(main.knowledge,'ready',True)
+    monkeypatch.setattr(main.knowledge,'retrieve',no_retrieval)
+    monkeypatch.setattr(main.knowledge,'completion',grounded_answer)
     monkeypatch.setattr(main.engine,'topics',['Lead Management','Global Config','Task','Project','Properties','Dashboard','Data Management'])
     yield rows

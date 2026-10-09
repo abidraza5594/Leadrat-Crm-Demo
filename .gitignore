@@ -27,6 +27,8 @@ eval/results/
 
 .venv-train/
 slm/runs/
+# Generated Qwen3 chats are reproducible with slm/qwen3/prepare.py.
+slm/data/qwen3-v1/*.jsonl
 beacon.zip
 beacon.zip
 beacon_run.zip

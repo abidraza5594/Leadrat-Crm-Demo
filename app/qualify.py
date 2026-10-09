@@ -49,11 +49,17 @@ async def _chat(url, model, msgs, headers=None):
     from urllib.parse import urlsplit
     if urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'}:
         raise ValueError('The trained adapter endpoint must be local')
+    body={'model': model, 'messages': msgs, 'temperature': 0, 'max_tokens': 900}
+    if config.PLANNER_BACKEND=='llamacpp' and url.rstrip('/')==config.PLANNER_MODEL_URL+'/v1':
+        from .local_model import request_headers
+        headers=request_headers()
+        body['response_format']={'type':'json_object','schema':extraction_schema()}
     async with httpx.AsyncClient(timeout=httpx.Timeout(float(os.getenv('QUAL_SLM_TIMEOUT', '40')), connect=3)) as client:
-        r = await client.post(url.rstrip('/') + '/chat/completions', headers=headers or {}, json={
-            'model': model, 'messages': msgs, 'temperature': 0, 'max_tokens': 900})
+        r = await client.post(url.rstrip('/') + '/chat/completions', headers=headers or {}, json=body)
         r.raise_for_status()
-        return r.json()['choices'][0]['message']['content']
+        choice=r.json()['choices'][0]
+        if choice.get('finish_reason')=='length':raise ValueError('Customer extraction was truncated')
+        return choice['message']['content']
 
 EMAIL = r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+'
 PHONE = r'\+?\d[\d -]{8,}\d'

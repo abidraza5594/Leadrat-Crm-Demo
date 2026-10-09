@@ -13,14 +13,14 @@ def request_headers():
         raise ValueError('The conversation model must be local')
     return {}
 
-async def complete(messages, schema, max_tokens=240):
+async def complete(messages, schema, max_tokens=240, prompt_schema=None):
     prompt = [dict(m) for m in messages]
     body={'model':config.PLANNER_MODEL,'messages':prompt,'max_tokens':max_tokens,'temperature':0}
     if config.PLANNER_BACKEND=='llamacpp':
         body['response_format']={'type':'json_object','schema':schema}
     # A decoding grammar constrains tokens; it does not tell the model what the
     # fields mean. Include the contract in the prompt for both runtimes.
-    prompt[0]['content'] += '\nReturn only a JSON object matching this schema: ' + json.dumps(schema,separators=(',',':'))
+    prompt[0]['content'] += '\nReturn only a JSON object matching this schema: ' + json.dumps(prompt_schema or schema,separators=(',',':'))
     async with httpx.AsyncClient(timeout=httpx.Timeout(float(os.getenv('PLANNER_REQUEST_TIMEOUT','45')), connect=3)) as client:
         response = await client.post(config.PLANNER_MODEL_URL + '/v1/chat/completions',json=body,headers=request_headers())
         response.raise_for_status()

@@ -24,6 +24,10 @@ def load(path):
     return [json.loads(l) for l in Path(path).read_text('utf-8').splitlines() if l.strip()]
 
 def main():
+    release_file = ROOT / 'slm/current_release.json'
+    release=json.loads(release_file.read_text('utf-8')) if release_file.exists() else {}
+    if release.get('status') == 'retired' or release.get('runtime') == 'llamacpp':
+        raise SystemExit('The Qwen2.5 training pipeline is retired. Prepare the new Qwen3-4B training run; do not reload the old adapter.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', required=True); parser.add_argument('--epochs', type=float, default=2)
     parser.add_argument('--max-len', type=int, default=3072); parser.add_argument('--lr', type=float, default=5e-5)

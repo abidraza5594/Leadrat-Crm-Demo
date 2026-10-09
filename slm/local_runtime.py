@@ -9,7 +9,14 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 
 def ensure_local_model():
-    expected = json.loads((ROOT / 'slm/current_release.json').read_text())['weights_sha256']
+    release = json.loads((ROOT / 'slm/current_release.json').read_text())
+    if release.get('runtime') == 'llamacpp':
+        # The application starts ensure_planner separately; both tasks share it.
+        return
+    if release.get('status') == 'retired':
+        print('Previous qualification model retired; Qwen3 fine-tuning is pending.', flush=True)
+        return
+    expected = release['weights_sha256']
     url = os.getenv('LOCAL_MODEL_URL', 'http://127.0.0.1:8012').rstrip('/')
     def ready():
         try:

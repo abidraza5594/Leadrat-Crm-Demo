@@ -9,6 +9,14 @@ import asyncio
 import time
 from contextlib import nullcontext
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RELEASE = json.loads((ROOT / 'slm/current_release.json').read_text())
+if RELEASE.get('runtime') == 'llamacpp':
+    raise SystemExit('This release uses the shared Qwen3 runtime. Start Beacon with start.ps1.')
+if RELEASE.get('status') == 'retired':
+    raise SystemExit('The old qualification adapter has been retired. Qwen3 fine-tuning is pending.')
+
 import torch
 from fastapi import FastAPI, HTTPException, Request as HTTPRequest
 from fastapi.middleware.trustedhost import TrustedHostMiddleware

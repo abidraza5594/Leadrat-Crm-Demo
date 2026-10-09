@@ -29,10 +29,11 @@ from . import docs
 
 READ_ONLY=("I can't do that here. Only the confirmed Add Lead flow can save a new record. I do not delete, edit existing records, send, upload, export, assign or call. "
     "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
-# Spoken the moment a turn starts so the visitor hears Beacon within a second while the answer is prepared.
-# Voice only (no chat bubble); synthesised once per session in advance. Reported separately in eval/latency.py.
+# Optional filler spoken while a slow answer is prepared. Off by default: hearing the same phrase
+# before every reply sounds robotic. BEACON_VOICE_ACK=1 enables it, at most once per session.
 ACKS={'question':'Let me check that for you.','action':'Sure, one moment.'}
-ACK_AFTER=float(__import__('os').getenv('ACK_AFTER_MS','700'))/1000
+VOICE_ACK=os.getenv('BEACON_VOICE_ACK','0')=='1'
+ACK_AFTER=float(os.getenv('ACK_AFTER_MS','2500'))/1000
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
 ABANDONED_AFTER=30
@@ -96,6 +97,9 @@ class Session:
     last_decision:dict|None=None
     fact_evidence:dict=field(default_factory=dict)
     customer_revision:int=0
+    discovery_misses:dict=field(default_factory=dict)
+    acknowledged:bool=False
+    qual_dirty:bool=False
     def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
@@ -157,16 +161,11 @@ async def lifespan(app):
     engine.topics=sorted({c['module'] for c in docs.load(PROJECT['knowledge_dir'])})
     handoffs.prune()  # retention: drop handoff records older than HANDOFF_RETENTION_DAYS
     tasks=[asyncio.create_task(cleanup()),asyncio.create_task(warm_up())]
-    # Build the immutable handbook index before the first visitor question.
-    async def warm_handbook():
-        from .handbook_faq import entries
-        await asyncio.to_thread(entries)
-        await asyncio.to_thread(docs.index)
-    tasks.append(asyncio.create_task(warm_handbook()))
     async def warm_search():
         try:await knowledge.warm()
         except Exception as exc:print('Semantic knowledge preparation failed:',type(exc).__name__,flush=True)
-    if os.getenv('BEACON_WARM_KNOWLEDGE')=='1':tasks.append(asyncio.create_task(warm_search()))
+    # Loading the search model takes ~9 s; do it at start-up, not during the first visitor question.
+    if os.getenv('BEACON_WARM_KNOWLEDGE','1')=='1':tasks.append(asyncio.create_task(warm_search()))
     if config.PROVIDER=='local' and __import__('os').getenv('BEACON_START_LOCAL_MODEL')=='1':
         async def start_model():
             from slm.local_runtime import ensure_local_model
@@ -271,18 +270,31 @@ async def refresh_status(s):
 
 @app.get('/api/health')
 async def health():
-    local_details={};planner_available=False
+    local_details={};planner_available=False;adapter_active=False;adapter_release=None
     async with httpx.AsyncClient(timeout=2) as client:
-        try:
-            r=await client.get(config.LOCAL_MODEL_URL+'/health');r.raise_for_status();local_details=r.json()
-        except (httpx.HTTPError,ValueError):pass
+        if os.getenv('QUAL_SLM_URL') and os.getenv('QUAL_SLM_MODEL') and config.LOCAL_MODEL_URL!=config.PLANNER_MODEL_URL:
+            try:
+                r=await client.get(config.LOCAL_MODEL_URL+'/health');r.raise_for_status();local_details=r.json()
+            except (httpx.HTTPError,ValueError):pass
         try:
             from .local_model import request_headers
             r=await client.get(config.PLANNER_MODEL_URL+'/v1/models',headers=request_headers());r.raise_for_status()
             planner_available=config.PLANNER_MODEL in [m['id'] for m in r.json()['data']]
-        except (httpx.HTTPError,ValueError,KeyError,OSError):pass
+            if config.PLANNER_BACKEND=='llamacpp':
+                from slm.planner_runtime import active_release,verify_identity
+                release=active_release()
+                if release:
+                    props=await client.get(config.PLANNER_MODEL_URL+'/props',headers=request_headers());props.raise_for_status()
+                    adapters=await client.get(config.PLANNER_MODEL_URL+'/lora-adapters',headers=request_headers());adapters.raise_for_status()
+                    verify_identity([m['id'] for m in r.json()['data']],props.json(),adapters.json(),release)
+                    adapter_active=True;adapter_release=release['release_id']
+                    if os.getenv('QUAL_SLM_URL','').rstrip('/')==config.PLANNER_MODEL_URL+'/v1' and os.getenv('QUAL_SLM_MODEL')==release['model_alias']:
+                        local_details={'ready':True,'qualification_model':release['model_alias'],'weights_sha256':release['weights_sha256']}
+        except RuntimeError:planner_available=False
+        except (httpx.HTTPError,ValueError,KeyError,OSError):planner_available=False
     return {'status':'ok','provider':'local','model':config.PLANNER_MODEL,
       'model_available':planner_available,'qualification_available':bool(local_details.get('ready')),
+      'trained_adapter_active':adapter_active,'adapter_release':adapter_release,
       'sandbox_confirmed':config.SANDBOX_CONFIRMED,'api_usage':USAGE,
       'screen_transport':'authenticated_jpeg_polling','demo_browser':'hidden' if config.HEADLESS else 'visible_window',
       'saved_login':config.BROWSER_STATE.is_file(),'login_credentials_in_memory':has_login_credentials(),
@@ -345,7 +357,7 @@ def conversation_context(s,message):
 
 
 async def execute(s,message):
-    started=time.monotonic();ack=None;needs_qualification=False
+    started=time.monotonic();ack=None;needs_qualification=False;demo=None
     lead_turn=bool(s.lead_draft);message_start=len(s.messages)
     try:
         # Form values/confirmation are validation, not product intent routing.
@@ -361,13 +373,22 @@ async def execute(s,message):
         if write_request(message):
             s.steps.append({'title':'Requested CRM change','status':'blocked','detail':READ_ONLY})
             s.say(READ_ONLY);return
-        if s.voice_enabled:
+        if s.voice_enabled and VOICE_ACK and not s.acknowledged:
             count=len(s.messages)
             async def acknowledge():
                 await asyncio.sleep(ACK_AFTER)
-                if len(s.messages)==count:s.say(ACKS['question'],kind='ack')
+                if len(s.messages)==count:s.acknowledged=True;s.say(ACKS['question'],kind='ack')
             ack=asyncio.create_task(acknowledge())
-        outcome=await engine.decide(**conversation_context(s,message))
+        def on_decision(decision):
+            # Open the requested screen while the answer is still being written,
+            # so the live view changes within seconds instead of after the text.
+            nonlocal demo
+            d=Decision.model_validate(decision)
+            if d.kind!='product' or not d.demo or d.feature not in FEATURES:return
+            f=FEATURES[d.feature]
+            step={'title':f['title'],'status':'running','detail':'Opening the requested CRM screen.'};s.steps.append(step)
+            demo=(step,asyncio.create_task(s.worker.open_module(f)))
+        outcome=await engine.decide(on_decision=on_decision,**conversation_context(s,message))
         d=Decision.model_validate(outcome['decision']);s.last_decision=d.model_dump()
         if s.messages and s.messages[-1]['role']=='user' and s.messages[-1]['text']==message:
             s.messages[-1]['kind']='customer_answer' if d.kind=='customer' else 'product_question' if d.kind=='product' else 'unverified_input'
@@ -384,10 +405,12 @@ async def execute(s,message):
         if d.kind in {'clarify','chat'}:
             s.say(d.reply or 'Which feature would you like to explore?');return
         if d.kind=='customer':
+            pending=s.pending_discovery
+            d.updates=answer_pending(s,pending,message,d)
             if not d.updates and not d.skip:
+                if pending:s.discovery_misses[pending]=s.discovery_misses.get(pending,0)+1
                 s.say('Could you clarify that answer? I have not changed your details.')
                 return
-            pending=s.pending_discovery
             for u in d.updates:
                 if u.field=='contact' and not (re.search(EMAIL,u.evidence) or re.search(PHONE,u.evidence)):
                     s.say('Please share a valid email address or phone number, or say skip.');return
@@ -409,12 +432,15 @@ async def execute(s,message):
                     if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value)+'.')
                     elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {u.value:,} people on your sales team.')
                     elif u.field=='monthly_leads':acknowledgements.append(f'Got it — approximately {u.value:,} new leads per month.')
-                    elif u.field=='process':acknowledgements.append('You currently use '+str(u.value)+'.')
+                    elif u.field=='process':acknowledgements.append(process_ack(u.value))
                 s.say(' '.join(acknowledgements) or ('No problem, we can skip that.' if d.skip else 'Thanks, I have noted that.'),kind='customer_ack')
+            if s.pending_discovery not in {None,'contact','consent'} and s.discovery_misses.get(s.pending_discovery):
+                # Already asked twice: move on instead of repeating the same question.
+                s.pending_discovery=None
             if s.pending_discovery:
-                question=dict(DISCOVERY).get(s.pending_discovery)
-                if s.pending_discovery=='pain_points' and any(u.field=='process' for u in d.updates):
-                    question='What is the biggest difficulty with your current tool?'
+                # The reply answered something else; ask the open question again, once.
+                s.discovery_misses[s.pending_discovery]=s.discovery_misses.get(s.pending_discovery,0)+1
+                question=discovery_question(s,s.pending_discovery)
                 if s.pending_discovery=='contact':question='Please share the email or phone number the team should use.'
                 if question:s.say(question)
             else:
@@ -425,13 +451,14 @@ async def execute(s,message):
         s.offer=None
         answer=outcome['answer'];s.say(answer['text'],kind='product_answer')
         if d.feature=='unknown':
-            if d.demo:s.say('This walkthrough is not available in the current demo.',kind='product_answer')
+            if d.demo and answer.get('demo_requested'):s.say('I can explain this, but its screen walkthrough is not available here.',kind='product_answer')
             return
         f=FEATURES[d.feature];s.last_feature=d.feature
         if not d.demo:return
         s.worker.notify=s.say
-        step={'title':f['title'],'status':'running','detail':'Checking the requested CRM screen.'};s.steps.append(step)
-        result=await s.worker.open_module(f)
+        if not demo:on_decision(d.model_dump())
+        step,opening=demo;demo=None
+        result=await opening
         step['status']='verified';step['detail']=result;s.shown.add(f['module'])
         if f['id'] in {'leads','projects','tasks','properties','dashboard'}:
             s.shown.add(f['id'])
@@ -448,7 +475,7 @@ async def execute(s,message):
             from .lead_creation import begin
             await begin(s);return
         if s.pending_discovery:
-            question=dict(DISCOVERY).get(s.pending_discovery)
+            question=discovery_question(s,s.pending_discovery)
             if question:s.say('And to continue: '+question)
         else:discover(s)
         if not s.pending_discovery:follow_up(s)
@@ -468,6 +495,12 @@ async def execute(s,message):
             if step['status']=='running':step['status']='failed';step['detail']=s.last_error
     finally:
         if ack and not ack.done():ack.cancel()
+        if demo:
+            # The answer failed or was interrupted before the early screen change was awaited.
+            step,opening=demo
+            if not opening.done():opening.cancel()
+            opening.add_done_callback(lambda t:t.cancelled() or t.exception())
+            if step['status']=='running':step['status']='stopped';step['detail']='Not completed.'
         s.last_completed=time.monotonic()
         s.last_turn_ms=round((time.monotonic()-started)*1000)
         if lead_turn:
@@ -480,7 +513,8 @@ async def execute(s,message):
                     last_turn_ms=s.last_turn_ms,handoff_status=s.handoff_status,opted_out=s.opted_out)
                 await engine.store.save(PROJECT['id'],s.id,state)
             except Exception as exc:print('Conversation persistence failed:',type(exc).__name__,flush=True)
-        if needs_qualification and not lead_turn:
+        if needs_qualification:s.qual_dirty=True
+        if s.qual_dirty and not lead_turn:
             if s.qual_task and not s.qual_task.done():s.qual_task.cancel()
             async def after_pause():
                 # Do not start a full GPU extraction for every short reply
@@ -491,6 +525,7 @@ async def execute(s,message):
                 while (s.task and not s.task.done()) or time.monotonic()-s.last_completed<idle:
                     await asyncio.sleep(0.2)
                 await requalify(s)
+                s.qual_dirty=False
             s.qual_task=asyncio.create_task(after_pause())
 
 @app.post('/api/sessions/{id}/turn',status_code=202)
@@ -508,6 +543,10 @@ async def turn(id:str,body:Turn,request:Request):
         # Cancellation marks running steps as stopped; nothing half-done is claimed as verified.
         s.task.cancel()
         with suppress(asyncio.CancelledError):await s.task
+    if s.qual_task and not s.qual_task.done() and s.handoff_status!='pending':
+        # Lead scoring shares the single local model slot. A visitor waiting for a reply comes
+        # first; the scoring is marked outstanding and runs again after this turn.
+        s.qual_task.cancel();s.qual_dirty=True
     s.last_turn=time.monotonic();s.last_error=None;s.steps=[]
     s.turn_started=s.last_turn;s.timings=(s.timings+[{'turn':len(s.timings)+1}])[-200:]
     s.messages.append({'id':secrets.token_urlsafe(12),'role':'user','text':message})
@@ -549,7 +588,8 @@ async def voice_preference(id:str,body:VoicePreference,request:Request):
     s=owned(id,request);s.voice_enabled=body.enabled
     if not body.enabled:s.voice_cache.close()
     else:
-        for text in ACKS.values():s.voice_cache.prepare(text)
+        if VOICE_ACK:
+            for text in ACKS.values():s.voice_cache.prepare(text)
     return {'enabled':body.enabled}
 
 @app.get('/api/sessions/{id}/speech')
@@ -569,10 +609,45 @@ async def speech(id:str,request:Request,message_id:str|None=None,message_index:i
 DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a developer or a channel partner?'),
     ('organisation.agents','How many people are on your sales team?'),
     ('monthly_leads','Roughly how many new leads do you get in a month?'),
-    ('pain_points','What is the biggest problem with how you handle leads today?'),
+    # Ask what they use before what hurts, so a tool name is never mistaken for the problem.
     ('process','What do you use to manage leads today: Excel, WhatsApp or another CRM?'),
+    ('pain_points','What is the biggest problem with how you handle leads today?'),
     ('influence','Would you be the one deciding on a CRM, or evaluating it for someone else?'),
     ('next_step','When would you want a new CRM running: within the next month, or later?')]
+
+TEXT_FACTS={'pain_points','process','influence','next_step'}
+NO_TOOL=re.compile(r"\b(not using|not use|don'?t use|do not use|no (?:tool|tools|software|crm|system)|nothing|none|manual(?:ly)?|pen and paper|notebook|diary|register)\b",re.I)
+TOOLS=[(r'excels?|spreadsheets?|xls',"Excel"),(r'google sheets?|sheets?','Google Sheets'),(r'whats ?app','WhatsApp'),
+    (r'salesforce','Salesforce'),(r'zoho','Zoho'),(r'hubspot','HubSpot'),(r'sell\.?do','Sell.Do'),(r'crm','a CRM')]
+
+def tool_names(text):
+    names=[name for pattern,name in TOOLS if re.search(r'\b(?:'+pattern+r')\b',str(text),re.I)]
+    return ' and '.join(dict.fromkeys(names))
+
+def process_ack(value):
+    if NO_TOOL.search(str(value)):return 'Understood — no dedicated lead tool today.'
+    names=tool_names(value)
+    return f'Got it — you manage leads with {names} today.' if names else 'Got it, I have noted how you manage leads today.'
+
+def discovery_question(s,path):
+    question=dict(DISCOVERY).get(path)
+    tool=s.discovery_answers.get('process')
+    if path=='pain_points' and tool:
+        if NO_TOOL.search(str(tool)):question='What is the biggest problem with handling leads that way: missed follow-ups, slow responses, or something else?'
+        elif tool_names(tool):question=f'What is the biggest problem you face managing leads in {tool_names(tool)}?'
+    return question
+
+def answer_pending(s,pending,message,d):
+    """A reply to our open text question is kept as its answer instead of being re-asked in a loop.
+
+    The first reply that does not answer the open question is handled normally and the question
+    is asked once more; the next reply is taken as the visitor's answer to it."""
+    updates=list(d.updates)
+    if pending not in TEXT_FACTS or d.skip or any(u.field==pending for u in updates):return updates
+    if not s.discovery_misses.get(pending):return updates
+    from .conversation_engine import TextUpdate
+    text=message.strip()[:500]
+    return [u for u in updates if u.field not in TEXT_FACTS]+[TextUpdate(field=pending,value=text,evidence=text)]
 
 def known(q,path):
     value=q
@@ -603,7 +678,7 @@ def discover(s):
     # Every unknown fact is needed to score the lead, so each is asked once unless the visitor already said it.
     for path,question in DISCOVERY:
         if path not in s.discovery_asked and path not in s.discovery_answers and not known(q,path):
-            s.discovery_asked.append(path);s.pending_discovery=path;s.say(question);return
+            s.discovery_asked.append(path);s.pending_discovery=path;s.say(discovery_question(s,path));return
     # The contact question closes discovery.
     if not q.get('consent') and 'consent' not in s.discovery_asked:
         s.discovery_asked.append('consent')

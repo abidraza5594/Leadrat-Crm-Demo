@@ -120,3 +120,39 @@ def test_browser_cleanup_survives_expired_page_and_failed_close():
         assert calls==['context','browser','driver']
         assert worker.context is worker.browser is worker.pw is None
     asyncio.run(run())
+
+def test_tool_reply_to_problem_question_does_not_loop(isolated_conversation_model):
+    """Live regression: 'excels' / 'i am not using any tools' re-asked the same question forever."""
+    isolated_conversation_model['excels']={'kind':'customer','updates':[{'field':'process','value':'excels','evidence':'excels'}]}
+    isolated_conversation_model['i am not using any tools']={'kind':'customer','updates':[
+        {'field':'process','value':'i am not using any tools','evidence':'i am not using any tools'}]}
+    isolated_conversation_model['follow ups get missed']={'kind':'customer','updates':[
+        {'field':'process','value':'follow ups get missed','evidence':'follow ups get missed'}]}
+    async def run():
+        s=main.Session(pending_discovery='process',discovery_asked=['organisation.type','organisation.agents','monthly_leads','process'])
+        await main.execute(s,'excels')
+        assert s.discovery_answers['process']=='excels'
+        assert 'Excel' in s.messages[-2]['text'] and 'You currently use' not in s.messages[-2]['text']
+        assert s.pending_discovery=='pain_points' and 'Excel' in s.messages[-1]['text']
+        await main.execute(s,'i am not using any tools')
+        assert s.messages[-2]['text']=='Understood — no dedicated lead tool today.'
+        assert s.pending_discovery=='pain_points' and 'handling leads that way' in s.messages[-1]['text']
+        await main.execute(s,'follow ups get missed')
+        assert s.discovery_answers['pain_points']=='follow ups get missed'
+        assert s.pending_discovery!='pain_points'
+        if s.qual_task:s.qual_task.cancel()
+    asyncio.run(run())
+
+def test_early_screen_opening_runs_before_the_answer_is_written(isolated_conversation_model,monkeypatch):
+    order=[]
+    class Worker:
+        async def open_module(self,f):order.append('open');return 'Verified'
+    original=main.knowledge.answer
+    async def answer(*args,**kwargs):
+        await asyncio.sleep(0.05);order.append('answer');return await original(*args,**kwargs)
+    monkeypatch.setattr(main.knowledge,'answer',answer)
+    async def run():
+        s=main.Session(worker=Worker())
+        await main.execute(s,'show leads')
+        assert order==['open','answer'] and s.steps[0]['status']=='verified'
+    asyncio.run(run())

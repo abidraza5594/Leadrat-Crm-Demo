@@ -133,8 +133,9 @@ FACT_SCHEMA={'type':'object','properties':{'updates':{'type':'array','maxItems':
 def product_contract(features, topics, knowledge):
     """Share the exact inference contract with the new supervised-data builder."""
     catalogue={key:f.get('description',f.get('intent_description',f['title'])) for key,f in features.items()}
+    # The handbook's cover and support-agent guidance are not product modules a visitor can ask about.
     virtual={'knowledge:'+topic:topic for topic in topics if topic not in {
-        t for f in features.values() for t in f['knowledge_topics']}}
+        t for f in features.values() for t in f['knowledge_topics']} and topic not in {'Handbook overview','Handbook guidance'}}
     catalogue.update({key:knowledge.topic_description(topic)+' (explanation only; no demo screen)' for key,topic in virtual.items()})
     schema={'type':'object','properties':{
         'feature':{'type':'string','enum':['unknown',*catalogue]},

@@ -156,3 +156,22 @@ def test_early_screen_opening_runs_before_the_answer_is_written(isolated_convers
         await main.execute(s,'show leads')
         assert order==['open','answer'] and s.steps[0]['status']=='verified'
     asyncio.run(run())
+
+@pytest.mark.parametrize('feature,label,route',[('global_config','Global Config','global-config'),('data','Data','data'),
+    ('attendance','Attendance','attendance'),('team','Team','teams'),('org_profile','Org Profile','profile'),('leadrat_ai','LeadRat AI','leadrat-ai')])
+def test_every_sidebar_module_in_the_handbook_has_a_demo_screen(isolated_conversation_model,feature,label,route):
+    """Live report: 'explain me global config' was answered but its screen never opened."""
+    f=FEATURES[feature]
+    # Labels and route prefixes come from the CRM sidebar (src/app/layout/left-nav/left-nav.component.ts).
+    assert f['nav_label']==label and f['module']==route and f['path'].startswith('/'+route) and f['workspace']
+    question='explain '+label
+    isolated_conversation_model[question]={'kind':'product','feature':feature,'topic':f['knowledge_topics'][0],'demo':True}
+    opened=[]
+    class Worker:
+        async def open_module(self,f):opened.append(f['id']);return 'Verified'
+    async def run():
+        s=main.Session(worker=Worker())
+        await main.execute(s,question)
+        assert opened==[feature] and s.steps[0]['status']=='verified'
+        assert any(m['text']=='The '+f['title']+' is open.' for m in s.messages)
+    asyncio.run(run())

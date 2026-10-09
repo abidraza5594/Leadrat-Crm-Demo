@@ -205,7 +205,8 @@ class BrowserWorker:
         if not config.SANDBOX_CONFIRMED:raise DemoError('A test-data sandbox must be configured before showing CRM screens.')
         if not await self.signed_in():raise DemoError("The demo browser is not signed in to the test CRM yet, so I can't show this screen.")
         module=feature['module']
-        label={'task':'Tasks','properties':'Properties'}.get(module,module.title())
+        # The sidebar label as rendered by the CRM (src/app/layout/left-nav); module is its route prefix.
+        label=feature.get('nav_label') or {'task':'Tasks','properties':'Properties'}.get(module,module.title())
         async with self.lock:
             page=self.page
             await self.check_popups()

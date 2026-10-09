@@ -460,7 +460,7 @@ async def execute(s,message):
         step,opening=demo;demo=None
         result=await opening
         step['status']='verified';step['detail']=result;s.shown.add(f['module'])
-        if f['id'] in {'leads','projects','tasks','properties','dashboard'}:
+        if f['workspace']:
             s.shown.add(f['id'])
             s.say('The '+f['title']+' is open.',kind='product_answer')
         else:

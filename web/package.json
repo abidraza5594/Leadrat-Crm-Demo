@@ -1,0 +1,11 @@
+{
+  "name": "beacon-web-assets",
+  "private": true,
+  "scripts": {
+    "vendor": "node vendor-assets.mjs"
+  },
+  "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "0.4.1",
+    "intl-tel-input": "29.5.4"
+  }
+}

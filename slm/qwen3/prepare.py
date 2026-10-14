@@ -15,8 +15,9 @@ sys.path.insert(0,str(ROOT))
 from app import docs
 from app.project import FEATURES,PROJECT
 from app.semantic_knowledge import SemanticKnowledge
-from app.conversation_engine import (classification_dialogue,dialogue,product_contract,
-    KIND_SCHEMA,FACT_SCHEMA,FACT_SYSTEM,QUESTIONS)
+from app.conversation_engine import QUESTIONS
+from app.legacy_contract import (classification_dialogue,dialogue,product_contract,
+    KIND_SCHEMA,FACT_SCHEMA,FACT_SYSTEM)
 from slm.prompting import facts_messages,facts_target_text,parse_facts
 
 OUT=ROOT/'slm/data/qwen3-v1'

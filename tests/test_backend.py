@@ -81,6 +81,67 @@ def test_retried_turn_is_accepted_only_once(client,monkeypatch):
     assert client.post(path+'/turn',json=payload).status_code==404
     client.delete(path,headers=h)
 
+def test_uncertain_registration_blocks_only_same_phone(client,monkeypatch):
+    from app import registration
+    calls=[]
+    async def register(session,visitor):
+        calls.append(visitor.phone)
+        await asyncio.sleep(.1)
+    monkeypatch.setattr(registration,'register',register)
+    snapshot,h=start(client);s=main.sessions[snapshot['id']]
+    path='/api/sessions/'+s.id+'/visitor'
+    s.registration_status='review_required';s.registration_blocked_phones.add('+12025550173')
+    original={'name':'Retry QA','email':'retry@example.com','phone':'+12025550173'}
+    assert client.post(path,headers=h,json=original).json()['status']=='review_required'
+    assert client.post(path,headers=h,json={**original,'email':'changed@example.com'}).json()['status']=='review_required'
+    assert calls==[]
+    corrected={**original,'phone':'+12025550174'}
+    assert client.post(path,headers=h,json=corrected).json()['status']=='saving'
+    assert client.post(path,headers=h,json=corrected).json()['status']=='saving'
+    assert calls==['+12025550174']
+    client.delete('/api/sessions/'+s.id,headers=h)
+
+
+def test_demo_continues_while_registration_saves_and_capture_survives_close(client,monkeypatch):
+    from app import registration
+    import threading
+    release=threading.Event();completed=threading.Event();executed=[]
+    async def capture(s,visitor):
+        while not release.is_set():await asyncio.sleep(.01)
+        s.registration_status='created';completed.set()
+    async def execute(s,message):executed.append(message)
+    monkeypatch.setattr(registration,'register',capture)
+    monkeypatch.setattr(main,'execute',execute)
+    monkeypatch.setenv('BEACON_REQUIRE_VISITOR_DETAILS','1')
+    snapshot,h=start(client);path='/api/sessions/'+snapshot['id']
+    assert client.post(path+'/turn',headers=h,json={'message':'Show leads'}).status_code==428
+    try:
+        r=client.post(path+'/visitor',headers=h,json={'name':'Visitor QA','email':'qa@example.invalid','phone':'+12025550123'})
+        assert r.json()=={'status':'saving','accepted':True}
+        assert not completed.is_set()
+        assert client.get(path,headers=h).json()['registration_accepted'] is True
+        assert client.post(path+'/turn',headers=h,json={'message':'Show leads'}).status_code==202
+        assert executed==['Show leads']
+        assert client.delete(path,headers=h).status_code==204
+        assert not completed.is_set()
+    finally:release.set()
+    assert completed.wait(2)
+
+
+def test_registration_failure_does_not_overwrite_demo_error(client,monkeypatch):
+    from app import registration
+    async def fail(s,v):
+        s.registration_status='failed';s.registration_error='Please update your details.'
+    monkeypatch.setattr(registration,'register',fail)
+    monkeypatch.setenv('BEACON_REQUIRE_VISITOR_DETAILS','1')
+    snapshot,h=start(client);s=main.sessions[snapshot['id']];s.last_error='Demo action failed'
+    path='/api/sessions/'+s.id
+    client.post(path+'/visitor',headers=h,json={'name':'Visitor QA','email':'qa@example.invalid','phone':'+12025550123'})
+    state=client.get(path,headers=h).json()
+    assert state['registration_accepted'] and state['registration_status']=='failed'
+    assert state['last_error']=='Demo action failed' and state['registration_error']=='Please update your details.'
+    client.delete(path,headers=h)
+
 def test_verified_action_and_refusal():
     async def run():
         s=main.Session(worker=Worker())
@@ -135,6 +196,31 @@ def test_one_bubble_per_reply_with_voice_parts(client):
     assert client.get(path+'/speech?message_id='+message['id']+'&part=2',headers=h).status_code==404
     client.delete(path,headers=h)
 
+def test_streaming_speech_ownership_headers_and_provider_failure(client,monkeypatch):
+    monkeypatch.setattr(main.config,'TTS_PROVIDER','edge')
+    s,h=start(client);path='/api/sessions/'+s['id']
+    session=main.sessions[s['id']]
+    session.say('Streaming response.')
+    message=session.messages[-1]
+    async def chunks(text):
+        yield b'first'
+        yield b'last'
+    session.voice_cache.stream=chunks
+    url=path+'/speech?message_id='+message['id']+'&stream=true'
+    assert client.get(url).status_code==404
+    response=client.get(url,headers=h)
+    assert response.content==b'firstlast'
+    assert response.headers['x-accel-buffering']=='no'
+    assert response.headers['cache-control']=='no-store'
+    assert 'content-length' not in response.headers
+    async def unavailable(text):
+        raise RuntimeError('provider unavailable')
+        yield b''
+    session.voice_cache.stream=unavailable
+    assert client.get(url,headers=h).status_code==503
+    client.delete(path,headers=h)
+
+
 def test_transient_auth_miss_does_not_flip_status():
     class Flaky(Worker):
         answers=[None,False,False]
@@ -150,9 +236,12 @@ def test_transient_auth_miss_does_not_flip_status():
 
 def test_expired_login_signs_in_again(monkeypatch):
     class Expiring(Worker):
-        async def authenticated(self):return False
-        async def login(self):return True
+        connected=False
+        async def authenticated(self):return self.connected
+        async def signed_in(self):return self.connected
+        async def login(self):self.connected=True;return True
     monkeypatch.setattr(main,'has_login_credentials',lambda:True)
+    monkeypatch.setattr(main.recovery,'has_login_credentials',lambda:True)
     async def run():
         s=main.Session(worker=Expiring());s.status='ready';s.auth_lost=time.monotonic()-5
         await main.refresh_status(s)

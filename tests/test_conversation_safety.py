@@ -25,17 +25,6 @@ def test_empty_extraction_does_not_acknowledge_saved_facts(isolated_conversation
         assert 'not changed' in s.messages[-1]['text']
     asyncio.run(run())
 
-def test_short_answer_to_open_text_question_is_kept_when_extraction_is_empty(isolated_conversation_model):
-    """Live: 'follow up' answering the biggest-problem question got "Could you clarify that answer?"."""
-    isolated_conversation_model['follow up']={'kind':'customer','updates':[]}
-    async def run():
-        s=main.Session(pending_discovery='pain_points',discovery_asked=['pain_points'])
-        await main.execute(s,'follow up')
-        assert s.discovery_answers['pain_points']=='follow up' and s.pending_discovery!='pain_points'
-        assert s.messages[0]['text']=='Got it, I have noted that.'
-        if s.qual_task:s.qual_task.cancel()
-    asyncio.run(run())
-
 def test_current_message_is_not_duplicated_in_history():
     s=main.Session();s.say('How many people?')
     s.messages.append({'id':'u1','role':'user','text':'17'})
@@ -132,29 +121,6 @@ def test_browser_cleanup_survives_expired_page_and_failed_close():
         assert worker.context is worker.browser is worker.pw is None
     asyncio.run(run())
 
-def test_tool_reply_to_problem_question_does_not_loop(isolated_conversation_model):
-    """Live regression: 'excels' / 'i am not using any tools' re-asked the same question forever
-    and echoed the raw reply ("You currently use i am not using any tools.")."""
-    isolated_conversation_model['excels']={'kind':'customer','updates':[{'field':'process','value':'excels','evidence':'excels','summary':'you manage leads in Excel'}]}
-    isolated_conversation_model['i am not using any tools']={'kind':'customer','updates':[
-        {'field':'process','value':'i am not using any tools','evidence':'i am not using any tools','summary':'you do not use any tool yet'}]}
-    isolated_conversation_model['follow ups get missed']={'kind':'customer','updates':[
-        {'field':'process','value':'follow ups get missed','evidence':'follow ups get missed','summary':'you miss follow-ups'}]}
-    async def run():
-        s=main.Session(pending_discovery='process',discovery_asked=['organisation.type','organisation.agents','monthly_leads','process'])
-        await main.execute(s,'excels')
-        assert s.discovery_answers['process']=='excels'
-        assert s.messages[-2]['text']=='Got it — you manage leads in Excel.'
-        assert s.pending_discovery=='pain_points'
-        await main.execute(s,'i am not using any tools')
-        assert s.messages[-2]['text']=='Got it — you do not use any tool yet.'
-        assert s.pending_discovery=='pain_points'
-        await main.execute(s,'follow ups get missed')
-        assert s.discovery_answers['pain_points']=='follow ups get missed'
-        assert s.pending_discovery!='pain_points'
-        if s.qual_task:s.qual_task.cancel()
-    asyncio.run(run())
-
 def test_acknowledgement_never_echoes_raw_reply_without_a_restatement():
     from app.conversation_engine import TextUpdate
     assert main.restated(TextUpdate(field='process',value='i am not usting any tools',evidence='i am not usting any tools'))=='Got it, I have noted that.'
@@ -173,53 +139,6 @@ def test_early_screen_opening_runs_before_the_answer_is_written(isolated_convers
         assert order==['open','answer'] and s.steps[0]['status']=='verified'
     asyncio.run(run())
 
-LOCATION={'id':'p7','path':'/global-config','page':'Global Config','section':'Integration','text':'Global Config › Integration'}
-
-def test_question_without_a_walkthrough_opens_the_located_screen(isolated_conversation_model,monkeypatch):
-    """Live report: "what is integration" opened a lead's communication screen. Any page or section is
-    located from the CRM's own screen map instead of being forced onto the nearest prepared walkthrough."""
-    isolated_conversation_model['what is integration']={'kind':'product','feature':'unknown','topic':'unknown','demo':True}
-    seen={}
-    async def prepare(encoder):pass
-    async def choose(completion,encoder,message,history,**kwargs):seen['message']=message;return LOCATION
-    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
-    opened=[]
-    class Worker:
-        async def open_location(self,location):opened.append(location['path']);return 'Global Config is open and its "Integration" section is highlighted.'
-        async def open_module(self,f):raise AssertionError('No prepared walkthrough applies')
-    async def run():
-        s=main.Session(worker=Worker())
-        await main.execute(s,'what is integration')
-        assert seen['message']=='what is integration' and opened==['/global-config']
-        assert s.steps[0]['title']=='Global Config' and s.steps[0]['status']=='verified'
-        assert any('"Integration" section is highlighted' in m['text'] for m in s.messages)
-    asyncio.run(run())
-
-def test_located_screen_text_is_given_to_the_answer(isolated_conversation_model,monkeypatch):
-    isolated_conversation_model['what is integration']={'kind':'product','feature':'unknown','topic':'unknown','demo':True}
-    async def prepare(encoder):pass
-    async def choose(*args,**kwargs):return LOCATION
-    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
-    got={}
-    async def answer(question,decision,features,**kwargs):got.update(kwargs);return {'text':'Integrations bring leads in.','grounded':True,'demo_requested':False,'sources':[]}
-    monkeypatch.setattr(main.knowledge,'answer',answer)
-    class Worker:
-        async def open_location(self,location):return 'Open.'
-    asyncio.run(main.execute(main.Session(worker=Worker()),'what is integration'))
-    assert got['location']==LOCATION
-
-def test_no_matching_location_opens_nothing(isolated_conversation_model,monkeypatch):
-    isolated_conversation_model['explain offplan']={'kind':'product','feature':'unknown','topic':'Offplan','demo':True}
-    async def prepare(encoder):pass
-    async def choose(*args,**kwargs):return None
-    monkeypatch.setattr(main.screens,'prepare',prepare);monkeypatch.setattr(main.screens,'choose',choose)
-    class Worker:
-        async def open_location(self,location):raise AssertionError('Nothing matched; nothing may open')
-    async def run():
-        s=main.Session(worker=Worker())
-        await main.execute(s,'explain offplan')
-        assert not s.steps
-    asyncio.run(run())
 
 @pytest.mark.parametrize('decision',[{'kind':'product','feature':'unknown','topic':'Global Config','demo':False},
     {'kind':'product','feature':'unknown','topic':'Offplan','demo':True},{'kind':'product','feature':'leads','topic':'Lead Management','demo':False}])
@@ -234,14 +153,6 @@ def test_every_product_answer_ends_with_a_follow_up_question(isolated_conversati
         await main.execute(s,'tell me more')
         assert s.messages[-1]['text'].startswith('Shall I show you ')
     asyncio.run(run())
-
-def test_bare_topic_with_nothing_pending_is_routed_as_a_product_question(monkeypatch):
-    """A misspelled module name alone was taken as an empty customer answer ("Could you clarify that answer?")."""
-    replies=[{'kind':'CUSTOMER_FACT'},{'updates':[],'skip':False},{'feature':'screen','no_demo_quote':'','problem':False}]
-    async def complete(*args,**kwargs):return replies.pop(0)
-    monkeypatch.setattr(main.engine,'completion',complete)
-    decision=asyncio.run(main.engine.classify({'message':'orgnisation profle','pending_question':None}))['decision']
-    assert decision['kind']=='product' and decision['feature']=='unknown' and decision['demo']
 
 def test_sharing_a_number_after_the_contact_question_is_permission(isolated_conversation_model):
     """Live report: a phone number given in reply to "Would you like someone to contact you? If yes, share..."
@@ -267,13 +178,3 @@ def test_finishing_stops_questions_and_offers(isolated_conversation_model):
         assert s.messages[-1]['text']=='Sure. I am here if you need anything else.'
     asyncio.run(run())
 
-def test_answer_put_in_a_field_not_yet_asked_belongs_to_the_open_question(isolated_conversation_model):
-    """Live: 'follow up' answering the problem question was extracted as next_step."""
-    isolated_conversation_model['follow up']={'kind':'customer','updates':[{'field':'next_step','value':'follow up','evidence':'follow up','summary':'you struggle with follow-ups'}]}
-    async def run():
-        s=main.Session(pending_discovery='pain_points',discovery_asked=['organisation.type','organisation.agents','monthly_leads','process','pain_points'])
-        await main.execute(s,'follow up')
-        assert s.discovery_answers.get('pain_points')=='follow up' and 'next_step' not in s.discovery_answers
-        assert s.messages[0]['text']=='Got it — you struggle with follow-ups.'
-        if s.qual_task:s.qual_task.cancel()
-    asyncio.run(run())

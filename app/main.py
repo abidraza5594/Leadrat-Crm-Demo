@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from . import config
@@ -27,6 +27,7 @@ from .qualify import EMAIL, PHONE, EXCLUDED_KINDS, qualify_session, rules_extrac
 from . import handoff as handoffs
 from fastapi.responses import JSONResponse
 from . import docs
+from . import transport, usage, recovery
 
 READ_ONLY=("I can't do that here. Only the confirmed Add Lead flow can save a new record. I do not delete, edit existing records, send, upload, export, assign or call. "
     "I can show you where it is done and how it works; for example, ask \"how do I delete a lead?\"")
@@ -103,6 +104,19 @@ class Session:
     qual_dirty:bool=False
     # The visitor said they were finished; a repeated "nothing" gets a short reply, not the goodbye again.
     finished:bool=False
+    # The CRM page last shown from the screen map, so "isme kya hota hai" refers to it.
+    last_location:dict|None=None
+    recovery_lock:asyncio.Lock=field(default_factory=asyncio.Lock)
+    speech_key_issued:float=0
+    registration_status:str='needed'
+    registration_accepted:bool=False
+    registration_error:str|None=None
+    registration_profile:dict|None=None
+    registration_task:asyncio.Task|None=None
+    registration_lock:asyncio.Lock=field(default_factory=asyncio.Lock)
+    registration_blocked_phones:set=field(default_factory=set)
+    def __post_init__(self):
+        self.voice_cache.reference=self.id
     def say(self,text,kind=None):
         # One chat bubble per reply; voice fetches its short parts separately.
         parts=speech_parts(text)
@@ -121,14 +135,23 @@ class Session:
         pending=accepted_qualification(self,{'source':'pending','qualification':complete(Extraction()).model_dump()})
         return {**pending,**qualify(Facts(),declined=self.opted_out)}
     def snapshot(self):
+        from .quick_replies import for_question
         problem=getattr(self.worker,'login_problem',None)
         return {'id':self.id,'status':self.status,'busy':bool(self.task and not self.task.done()),'messages':self.messages,
           'steps':self.steps,'qualification':self.qual_view(),'handoff_status':self.handoff_status,'last_error':self.last_error,'product_areas_shown':sorted(self.shown),
+          'speech_provider':config.STT_PROVIDER,'tts_provider':config.TTS_PROVIDER,
+          'registration_required':os.getenv('BEACON_REQUIRE_VISITOR_DETAILS','1')=='1',
+          'registration_status':self.registration_status,
+          'registration_accepted':self.registration_accepted,
+          'registration_error':self.registration_error,
+          'quick_replies':for_question(self.pending_discovery) if not (self.opted_out or self.finished or self.lead_draft) else None,
+          'registration_blocked_phones':sorted(self.registration_blocked_phones),
           'login_help':(LOGIN_HELP+(' Last attempt: '+problem if problem else '')) if self.status=='login_required' else None}
 
 sessions:dict[str,Session]={}
 create_lock=asyncio.Lock()
 background:set[asyncio.Task]=set()
+registration_jobs:set[asyncio.Task]=set()
 browser_pool=WarmBrowser()
 conversation_store=None
 knowledge=SemanticKnowledge(project=PROJECT['id'],directory=PROJECT['knowledge_dir'])
@@ -140,6 +163,7 @@ def spawn(coroutine):
     task=asyncio.create_task(coroutine);background.add(task);task.add_done_callback(background.discard)
 
 async def close(s):
+    # Closing the demo must not cancel an accepted backend lead capture.
     for task in [s.task,s.boot,s.relogin,s.qual_task,s.refresh_task]:
         if task and not task.done():
             task.cancel()
@@ -159,6 +183,7 @@ async def cleanup():
 @asynccontextmanager
 async def lifespan(app):
     global conversation_store
+    await transport.start()
     conversation_store=ConversationStore()
     await conversation_store.start()
     engine.store=conversation_store;knowledge.store=conversation_store
@@ -178,7 +203,7 @@ async def lifespan(app):
             try:await asyncio.to_thread(ensure_local_model)
             except Exception as exc:print('Local model startup failed:',str(exc),flush=True)
         tasks.append(asyncio.create_task(start_model()))
-    if config.PLANNER_BACKEND=='llamacpp' and os.getenv('BEACON_START_LOCAL_MODEL')=='1':
+    if config.PROVIDER=='local' and config.PLANNER_BACKEND=='llamacpp' and os.getenv('BEACON_START_LOCAL_MODEL')=='1':
         async def start_planner():
             from slm.planner_runtime import ensure_planner
             try:await asyncio.to_thread(ensure_planner)
@@ -194,7 +219,12 @@ async def lifespan(app):
     for task in tasks:
         with suppress(BaseException):await task
     for s in list(sessions.values()):await close(s)
+    if registration_jobs:
+        _,pending=await asyncio.wait(list(registration_jobs),timeout=30)
+        for task in pending:task.cancel()
+        if pending:await asyncio.gather(*pending,return_exceptions=True)
     await conversation_store.close();conversation_store=None;engine.store=None;knowledge.store=None
+    await transport.close()
 
 app=FastAPI(title='Beacon standalone demo backend',lifespan=lifespan,docs_url='/api/docs',redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1','testserver'])
@@ -207,7 +237,7 @@ async def security(request:Request,call_next):
     response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
-    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors "+' '.join(sorted(config.ORIGINS))+';'
+    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss://stt-rt.soniox.com; frame-ancestors "+' '.join(sorted(config.ORIGINS))+';'
     return response
 
 class Create(BaseModel):
@@ -233,7 +263,7 @@ async def boot(s):
         if browser_pool.enabled:s.worker=await browser_pool.take()
         else:await s.worker.start()
         if await s.worker.signed_in():
-            s.status='ready';s.say('The test CRM is ready. Ask me to show Leads, Projects, Tasks or another available feature.')
+            s.status='ready';s.say('Your demo is ready. You can ask about Leads, Projects, Tasks or any other feature.')
         else:
             s.status='login_required'
             s.say('The demo browser is not signed in to the test CRM yet. You can still ask about the supported features, and the live screen will appear here once the operator signs in.')
@@ -242,9 +272,7 @@ async def boot(s):
         s.status='error';s.last_error='The demo browser could not start or reach the CRM. Check that Google Chrome is installed and CRM_URL is reachable, then end this session and retry.'
 
 async def relogin(s):
-    if await s.worker.login():
-        s.status='ready';s.auth_lost=None
-        s.say('I signed the demo browser in again. The live screen is back.')
+    await recovery.restore(s)
 
 async def refresh_status(s):
     """Debounced sign-in state: a navigation or a transient read error must not blank the screen."""
@@ -253,9 +281,10 @@ async def refresh_status(s):
         s.status='error';s.last_error='The demo browser has closed. End this session and start again.';return
     now=time.monotonic()
     # Actions own the page while they run; a sign-in attempt owns it too.
-    if now-s.auth_checked<0.8 or (s.task and not s.task.done()) or (s.relogin and not s.relogin.done()):return
+    if now-s.auth_checked<0.8 or (s.task and not s.task.done()) or (s.relogin and not s.relogin.done()) or (s.registration_task and not s.registration_task.done()):return
     s.auth_checked=now
     if s.status=='login_required' and await s.worker.adopt_saved_login():
+        if hasattr(s.worker,'restore_checkpoint'):await s.worker.restore_checkpoint()
         s.status='ready';s.auth_lost=None
         s.say('The operator has signed in. The test CRM is ready; ask me to show Leads, Projects, Tasks or another feature.')
         return
@@ -264,18 +293,28 @@ async def refresh_status(s):
     if auth:
         s.auth_lost=None
         if s.status=='login_required':
-            s.status='ready';s.say('The test CRM is ready. Ask me to show Leads, Projects, Tasks or another available feature.')
+            s.status='ready';s.say('Your demo is ready. You can ask about Leads, Projects, Tasks or any other feature.')
         return
     s.auth_lost=s.auth_lost or now
-    if s.status=='ready' and now-s.auth_lost>4:
+    if s.status=='ready' and now-s.auth_lost>0.8:
         s.status='login_required'
         if has_login_credentials():
-            s.say('The CRM sign-in expired. I am signing the demo browser in again.')
             s.relogin=asyncio.create_task(relogin(s))
         else:s.say('The CRM sign-in expired, so the live screen is paused until the operator signs in again.')
 
 @app.get('/api/health')
 async def health():
+    if config.PROVIDER=='deepseek':
+        # Hosted conversation and qualification model; the key itself is never reported.
+        return {'status':'ok','provider':'deepseek','model':config.DEEPSEEK_MODEL,'model_available':bool(config.DEEPSEEK_API_KEY),
+          'qualification_available':bool(config.DEEPSEEK_API_KEY),'qualification':config.DEEPSEEK_MODEL,
+          'trained_adapter_active':False,'adapter_release':None,'sandbox_confirmed':config.SANDBOX_CONFIRMED,'api_usage':USAGE,
+          'screen_transport':'authenticated_jpeg_polling','demo_browser':'hidden' if config.HEADLESS else 'visible_window',
+          'saved_login':config.BROWSER_STATE.is_file(),'login_credentials_in_memory':has_login_credentials(),
+          'speech':config.TTS_PROVIDER,'external_llm_calls':True,'capacity':1,
+          'conversation_engine':'planner-v1','conversation_model':config.DEEPSEEK_MODEL,
+          'conversation_database':conversation_store.backend if conversation_store else 'not_started',
+          'knowledge_ready':knowledge.ready,'knowledge_error':knowledge.error,'screen_index_ready':screens.ready}
     local_details={};planner_available=False;adapter_active=False;adapter_release=None
     async with httpx.AsyncClient(timeout=2) as client:
         if os.getenv('QUAL_SLM_URL') and os.getenv('QUAL_SLM_MODEL') and config.LOCAL_MODEL_URL!=config.PLANNER_MODEL_URL:
@@ -321,7 +360,7 @@ async def create(body:Create):
         s=Session(voice_enabled=body.voice);sessions[s.id]=s
         # The local model unloads after 30 idle minutes; reload it while the browser boots.
         spawn(warm_up())
-        s.say('Welcome to Beacon. I can explain the verified feature catalogue and demonstrate supported screens in the test CRM.')
+        s.say('Welcome to Beacon! I can answer your questions about Leadrat and show you how it works. What would you like to explore?')
         s.boot=asyncio.create_task(boot(s))
         # A prepared browser can be handed over immediately, without a starting-state poll.
         if browser_pool.ready():
@@ -359,10 +398,12 @@ def conversation_context(s,message):
     history=[{'role':m['role'],'text':m['text'][:240]} for m in messages
              if m.get('kind') not in {'ack','lead_creation'}][-8:]
     return dict(session_id=s.id,message=message,history=history,customer=s.discovery_answers,
-        pending_question=s.pending_discovery,last_feature=s.last_feature,last_offer=s.offer)
+        pending_question=s.pending_discovery,last_feature=s.last_feature,last_offer=s.offer,
+        last_location=s.last_location)
 
 
 async def execute(s,message):
+    usage_token=usage.session_id.set(s.id)
     started=time.monotonic();ack=None;needs_qualification=False;demo=None
     lead_turn=bool(s.lead_draft);message_start=len(s.messages)
     try:
@@ -393,12 +434,12 @@ async def execute(s,message):
             if d.kind!='product' or not d.demo:return
             if location:
                 step={'title':location['page'],'status':'running','detail':'Opening the CRM screen for this question.'};s.steps.append(step)
-                demo=(step,asyncio.create_task(s.worker.open_location(location)))
+                demo=(step,asyncio.create_task(recovery.read_action(s,lambda:s.worker.open_location(location))))
                 return
             if d.feature not in FEATURES:return
             f=FEATURES[d.feature]
             step={'title':f['title'],'status':'running','detail':'Opening the requested CRM screen.'};s.steps.append(step)
-            demo=(step,asyncio.create_task(s.worker.open_module(f)))
+            demo=(step,asyncio.create_task(recovery.read_action(s,lambda:s.worker.open_module(f))))
         outcome=await engine.decide(on_decision=on_decision,**conversation_context(s,message))
         d=Decision.model_validate(outcome['decision']);s.last_decision=d.model_dump()
         if s.messages and s.messages[-1]['role']=='user' and s.messages[-1]['text']==message:
@@ -426,25 +467,13 @@ async def execute(s,message):
             s.say(d.reply or 'Which feature would you like to explore?');return
         if d.kind=='customer':
             pending=s.pending_discovery
-            d.updates=answer_pending(s,pending,message,d)
             if not d.updates and not d.skip:
                 if pending:s.discovery_misses[pending]=s.discovery_misses.get(pending,0)+1
                 s.say('Could you clarify that answer? I have not changed your details.')
                 return
-            for u in d.updates:
-                if u.field=='contact' and not (re.search(EMAIL,u.evidence) or re.search(PHONE,u.evidence)):
-                    s.say('Please share a valid email address or phone number, or say skip.');return
-                s.discovery_answers[u.field]=u.value
-                s.fact_evidence[u.field]={'quote':u.evidence,'message_id':s.messages[-1]['id'] if s.messages else None}
-                if u.field==pending:s.pending_discovery=None
-                if u.field=='consent' and u.value is False:s.opted_out=True
-            if pending=='consent' and any(u.field=='contact' for u in d.updates) and 'consent' not in s.discovery_answers:
-                # We asked "Would you like someone to contact you? If yes, share an email or phone number";
-                # sharing one in reply is that yes.
-                s.discovery_answers['consent']=True
-                s.fact_evidence['consent']=s.fact_evidence['contact']
+            if record_facts(s,d,pending)=='invalid_contact':
+                s.say('Please share a valid email address or phone number, or say skip.');return
             needs_qualification=bool(d.updates)
-            if d.updates:s.customer_revision+=1
             if d.skip:s.pending_discovery=None
             if s.discovery_answers.get('consent') is True and not s.discovery_answers.get('contact'):
                 s.pending_discovery='contact'
@@ -454,7 +483,7 @@ async def execute(s,message):
             else:
                 acknowledgements=[]
                 for u in d.updates:
-                    if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value)+'.')
+                    if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value).replace('_',' ')+'.')
                     elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {u.value:,} people on your sales team.')
                     elif u.field=='monthly_leads':acknowledgements.append(f'Got it — approximately {u.value:,} new leads per month.')
                     elif u.field in TEXT_FACTS:acknowledgements.append(restated(u))
@@ -473,6 +502,7 @@ async def execute(s,message):
                 if not s.pending_discovery:follow_up(s)
             return
         # Product answer and action consume the very same validated decision.
+        if d.updates and record_facts(s,d,s.pending_discovery)!='invalid_contact':needs_qualification=True
         s.offer=None
         answer=outcome['answer'];s.say(answer['text'],kind='product_answer')
         if d.feature=='unknown':
@@ -482,11 +512,12 @@ async def execute(s,message):
                 step,opening=demo;demo=None
                 result=await opening
                 step['status']='verified';step['detail']=result;s.shown.add(location['page'])
+                s.last_location={k:location.get(k) for k in ('id','path','page','section')}
                 s.say(result,kind='product_answer')
             elif d.demo and answer.get('demo_requested'):
                 s.say('I can explain this, but I could not find a matching screen in this CRM to show.',kind='product_answer')
             next_question(s);return
-        f=FEATURES[d.feature];s.last_feature=d.feature
+        f=FEATURES[d.feature];s.last_feature=d.feature;s.last_location=None
         if not d.demo:next_question(s);return
         s.worker.notify=s.say
         if not demo:on_decision(d.model_dump())
@@ -498,7 +529,7 @@ async def execute(s,message):
             s.say('The '+f['title']+' is open.',kind='product_answer')
         else:
             step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'};s.steps.append(step)
-            result=await walkthrough(s.worker,f)
+            result=await recovery.read_action(s,lambda:walkthrough(s.worker,f))
             overview_only='has not been opened or executed' in result or result.startswith('Email prerequisite:')
             step['status']='overview_only' if overview_only else 'verified';step['detail']=result
             if not overview_only:s.shown.add(f['id'])
@@ -556,10 +587,14 @@ async def execute(s,message):
                 await requalify(s)
                 s.qual_dirty=False
             s.qual_task=asyncio.create_task(after_pause())
+        usage.session_id.reset(usage_token)
 
 @app.post('/api/sessions/{id}/turn',status_code=202)
 async def turn(id:str,body:Turn,request:Request):
     s=owned(id,request,touch=True)
+    if os.getenv('BEACON_REQUIRE_VISITOR_DETAILS','1')=='1' and not (s.registration_accepted or s.registration_status=='created'):
+        raise HTTPException(428,'Please complete the details form before starting the conversation.')
+    if s.relogin and not s.relogin.done():raise HTTPException(409,'The CRM is reconnecting. Your conversation is preserved.')
     message=body.message.strip()
     if not message:raise HTTPException(422,'Enter a question')
     message_hash=__import__('hashlib').sha256(message.encode()).hexdigest()
@@ -622,7 +657,7 @@ async def voice_preference(id:str,body:VoicePreference,request:Request):
     return {'enabled':body.enabled}
 
 @app.get('/api/sessions/{id}/speech')
-async def speech(id:str,request:Request,message_id:str|None=None,message_index:int|None=None,part:int=0):
+async def speech(id:str,request:Request,message_id:str|None=None,message_index:int|None=None,part:int=0,stream:bool=False):
     s=owned(id,request)
     message=next((m for m in s.messages if m.get('id')==message_id),None) if message_id else (
         s.messages[message_index] if message_index is not None and 0<=message_index<len(s.messages) else None)
@@ -630,9 +665,62 @@ async def speech(id:str,request:Request,message_id:str|None=None,message_index:i
     parts=message.get('parts') or [message['text']]
     if not 0<=part<len(parts):raise HTTPException(404,'Speech part not found')
     try:
+        if stream and config.TTS_PROVIDER=='edge':
+            chunks=s.voice_cache.stream(parts[part])
+            # Check first audio before sending HTTP success; later failures terminate the stream.
+            first=await anext(chunks)
+            async def body():
+                try:
+                    yield first
+                    async for chunk in chunks:yield chunk
+                finally:await chunks.aclose()
+            return StreamingResponse(body(),media_type='audio/mpeg',headers={
+                'Cache-Control':'no-store','X-Accel-Buffering':'no'})
         audio=await asyncio.shield(s.voice_cache.prepare(parts[part]))
         return Response(audio,media_type='audio/mpeg')
-    except (Exception,asyncio.CancelledError):raise HTTPException(503,'Voice is unavailable. Use browser voice.')
+    except (Exception,asyncio.CancelledError):raise HTTPException(503,'Voice is temporarily unavailable. You can still read and type.')
+
+@app.post('/api/sessions/{id}/speech-key')
+async def speech_key(id:str,request:Request):
+    s=owned(id,request,touch=True)
+    if time.monotonic()-s.speech_key_issued<5:raise HTTPException(429,'Please wait before restarting the microphone.')
+    from .soniox import temporary_key
+    s.speech_key_issued=time.monotonic()
+    try:return await temporary_key(s.id)
+    except ValueError:raise HTTPException(503,'Soniox is not configured yet. You can still type.')
+    except Exception:raise HTTPException(503,'Speech connection is unavailable. Please try again.')
+
+from .registration import Visitor
+
+@app.post('/api/sessions/{id}/visitor',status_code=202)
+async def visitor(id:str,body:Visitor,request:Request):
+    s=owned(id,request,touch=True)
+    async with s.registration_lock:
+        if s.registration_status in {'saving','created'}:
+            return {'status':s.registration_status,'accepted':s.registration_accepted or s.registration_status=='created'}
+        if body.phone in s.registration_blocked_phones:
+            s.registration_status='review_required'
+            s.registration_error='We couldn’t confirm the registration for this number. Use a different number, or contact support for help.'
+            return {'status':'review_required','accepted':s.registration_accepted}
+        from .registration import register,remember_details
+        # Validate the normalized phone locally; no remote API call blocks this acknowledgement.
+        from .registration_api import payload,RegistrationRejected
+        try:payload(body)
+        except RegistrationRejected as exc:raise HTTPException(422,str(exc)) from exc
+        s.registration_error=None
+        s.registration_status='saving'
+        s.registration_accepted=True
+        remember_details(s,body)
+        async def capture():
+            try:await register(s,body)
+            except asyncio.CancelledError:raise
+            except Exception:
+                s.registration_status='failed'
+                s.registration_error='We couldn’t save your details. Please try again.'
+        s.registration_task=asyncio.create_task(capture())
+        registration_jobs.add(s.registration_task)
+        s.registration_task.add_done_callback(registration_jobs.discard)
+    return {'status':'saving','accepted':True}
 
 # Discovery: short questions, one per turn, only about what is still unknown, then the contact question.
 DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a developer or a channel partner?'),
@@ -654,23 +742,22 @@ def restated(update):
     if summary.casefold().startswith('you ') and len(summary)<=110:return 'Got it — '+summary+'.'
     return 'Got it, I have noted that.'
 
-def answer_pending(s,pending,message,d):
-    """A reply to our open text question is kept as its answer instead of being re-asked in a loop.
-
-    The first reply that does not answer the open question is handled normally and the question
-    is asked once more; the next reply is taken as the visitor's answer to it."""
-    updates=list(d.updates)
-    if pending in TEXT_FACTS and not any(u.field==pending for u in updates):
-        # A text answer for a question we have not asked yet cannot be a correction: it answers this one.
-        updates=[u.model_copy(update={'field':pending}) if u.field in TEXT_FACTS and u.field not in s.discovery_asked else u for u in updates]
-    if pending not in TEXT_FACTS or d.skip or any(u.field==pending for u in updates):return updates
-    # The model judged this message to be the visitor's answer; with nothing extracted, their own
-    # words answer the open question. A reply about another subject is applied, and the open
-    # question asked once more before the next reply is taken as its answer.
-    if updates and not s.discovery_misses.get(pending):return updates
-    from .conversation_engine import TextUpdate
-    text=message.strip()[:500]
-    return [u for u in updates if u.field not in TEXT_FACTS]+[TextUpdate(field=pending,value=text,evidence=text)]
+def record_facts(s,d,pending):
+    """Save the facts in a validated plan. Returns 'invalid_contact' when a contact quote holds no email or phone."""
+    if any(u.field=='contact' and not (re.search(EMAIL,u.evidence) or re.search(PHONE,u.evidence)) for u in d.updates):
+        return 'invalid_contact'
+    for u in d.updates:
+        s.discovery_answers[u.field]=u.value
+        s.fact_evidence[u.field]={'quote':u.evidence,'message_id':s.messages[-1]['id'] if s.messages else None}
+        if u.field==pending:s.pending_discovery=None
+        if u.field=='consent' and u.value is False:s.opted_out=True
+    if pending=='consent' and any(u.field=='contact' for u in d.updates) and 'consent' not in s.discovery_answers:
+        # We asked "Would you like someone to contact you? If yes, share an email or phone number";
+        # sharing one in reply is that yes.
+        s.discovery_answers['consent']=True
+        s.fact_evidence['consent']=s.fact_evidence['contact']
+    if d.updates:s.customer_revision+=1
+    return None
 
 def known(q,path):
     value=q
@@ -740,6 +827,12 @@ def accepted_qualification(s,result):
     messages=[m for m in s.messages if m.get('kind') not in EXCLUDED_KINDS]
     turn_ids={m.get('id'):i+1 for i,m in enumerate(messages) if m['role']=='user' and m.get('id')}
     evidence=dict(q.evidence)
+    profile=s.registration_profile
+    if answers.get('contact') and profile and s.fact_evidence.get('contact',{}).get('message_id')==profile['message_id']:
+        changes['contact']=q.contact.model_copy(update={k:profile[k] for k in ('name','email','phone')})
+        tid=turn_ids.get(profile['message_id'])
+        if tid:
+            for key in ('name','email','phone'):evidence['contact.'+key]=[tid]
     missing_evidence=False
     for key in ('organisation.type','organisation.agents','monthly_leads','pain_points','consent'):
         if key not in answers:continue
@@ -783,9 +876,17 @@ async def mock_crm(request:Request):
     status,body=handoffs.receive(await request.json())
     return JSONResponse(body,status_code=status)
 
+@app.get('/vendor/intl-tel-input/{filename:path}')
+async def phone_assets(filename:str):
+    if filename not in {'js/intlTelInput.min.js','js/utils.js','css/intlTelInput.css','img/flags.webp','img/flags@2x.webp'}:
+        raise HTTPException(404)
+    path=config.ROOT/'web/vendor/intl-tel-input'/filename
+    if not path.is_file():raise HTTPException(404)
+    return FileResponse(path)
+
 @app.get('/{filename}')
 async def static(filename:str):
-    if filename not in {'index.html','widget.html','widget.js','widget.css','widget-client.js','index.css','index.js'}:raise HTTPException(404)
+    if filename not in {'index.html','widget.html','widget.js','widget.css','widget-client.js','soniox-input.js','visitor-phone.js','index.css','index.js'}:raise HTTPException(404)
     path=config.ROOT/'web'/filename
     if not path.is_file():raise HTTPException(404)
     return FileResponse(path)

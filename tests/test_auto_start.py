@@ -24,7 +24,8 @@ def test_auto_start_reconnect_and_explicit_end():
      snap={'id':created[-1],'token':'test','status':'ready','busy':False,'messages':[],'steps':[]}
      await r.fulfill(content_type='application/json',body=json.dumps(snap));return
     f=Path('web')/path.lstrip('/')
-    await r.fulfill(content_type='text/html' if f.suffix=='.html' else 'text/javascript' if f.suffix=='.js' else 'text/css',body=f.read_text('utf8'))
+    import mimetypes
+    await r.fulfill(content_type=mimetypes.guess_type(str(f))[0] or 'application/octet-stream',body=f.read_bytes())
    await page.route('http://localhost:9876/**',route)
    await page.goto('http://localhost:9876/widget.html')
    # A stalled voice setup must not hold back the live preview.

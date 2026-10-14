@@ -47,16 +47,30 @@ def transcript_of(session_messages):
 
 async def _chat(url, model, msgs, headers=None):
     from urllib.parse import urlsplit
-    if urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'}:
-        raise ValueError('The trained adapter endpoint must be local')
     body={'model': model, 'messages': msgs, 'temperature': 0, 'max_tokens': 900}
+    if config.PROVIDER=='deepseek' and url.rstrip('/')==config.DEEPSEEK_URL:
+        # The configured hosted model; JSON mode, and the facts prompt states the exact keys.
+        headers={'Authorization':'Bearer '+config.DEEPSEEK_API_KEY}
+        body['response_format']={'type':'json_object'}
+        # Reasoning tokens would count against max_tokens and truncate the facts (see local_model.hosted).
+        if os.getenv('DEEPSEEK_THINKING','0')=='1':body['max_tokens']+=2048
+        else:body['thinking']={'type':'disabled'}
+    elif urlsplit(url).hostname not in {'127.0.0.1','localhost','::1'}:
+        raise ValueError('The trained adapter endpoint must be local')
     if config.PLANNER_BACKEND=='llamacpp' and url.rstrip('/')==config.PLANNER_MODEL_URL+'/v1':
         from .local_model import request_headers
         headers=request_headers()
         body['response_format']={'type':'json_object','schema':extraction_schema()}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(float(os.getenv('QUAL_SLM_TIMEOUT', '40')), connect=3)) as client:
-        r = await client.post(url.rstrip('/') + '/chat/completions', headers=headers or {}, json=body)
+    from . import transport, usage
+    async with transport.client() as client:
+        try:
+            r = await client.post(url.rstrip('/') + '/chat/completions', headers=headers or {}, json=body,
+                                 timeout=httpx.Timeout(float(os.getenv('QUAL_SLM_TIMEOUT', '40')), connect=3))
+        except httpx.RequestError:
+            if config.PROVIDER=='deepseek':await usage.record('deepseek',model,'qualification',status='usage_unknown_network_error')
+            raise
         r.raise_for_status()
+        if config.PROVIDER=='deepseek':await usage.model_response(r.json(),model,'qualification')
         choice=r.json()['choices'][0]
         if choice.get('finish_reason')=='length':raise ValueError('Customer extraction was truncated')
         return choice['message']['content']
@@ -169,6 +183,7 @@ async def qualify_session(session_messages):
     """{'qualification': dict, 'source': slm|rules, 'attempts': [...], 'ms': int}. Never raises."""
     started = time.monotonic(); turns = transcript_of(session_messages); msgs = qualification_prompt(turns); attempts = []
     url, model = os.getenv('QUAL_SLM_URL', ''), os.getenv('QUAL_SLM_MODEL', '')
+    if config.PROVIDER == 'deepseek': url, model = config.DEEPSEEK_URL, config.DEEPSEEK_MODEL
     if os.getenv('QUAL_SLM_FORMAT') == 'full': msgs = trained_messages(turns)
     if url and model:
         for attempt in (1, 2):

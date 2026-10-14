@@ -107,3 +107,30 @@ def test_support_playbook_is_used_only_when_the_model_judges_a_reported_problem(
     asyncio.run(k.answer('Why are units not showing in inventory?',Decision(kind='product',problem=True),{}))
     assert 'doc:7' not in seen[0] and 'doc:1' in seen[0]
     assert 'doc:7' in seen[1]
+
+def test_retrieval_fuses_meaning_and_exact_terms_and_reads_handbook_anchors():
+    import numpy as np
+    k=SemanticKnowledge();k.ready=True
+    k.documents=[{'id':1,'module':'Org Profile','section':'Purpose and overview','page':25,
+                  'text':'Stores organisation identity. Navigation anchor Org Profile / Organisation Profile Module boundary Org Profile is metadata.'},
+                 {'id':2,'module':'Task','section':'Feature catalogue','page':21,'text':'Task creation assigns work items.'}]
+    class Model:
+        def encode(self,text,**kw):return np.array([1.0,0.0]) if isinstance(text,str) else np.array([[0.0,1.0],[1.0,0.0]])
+    k.model=Model();k.vectors=np.array([[0.0,1.0],[1.0,0.0]])
+    # Meaning prefers the Task chunk; the exact term "logo"-free question about organisation identity is found by BM25.
+    hits=asyncio.run(k.retrieve('organisation identity'))
+    assert {d['module'] for _,d in hits}=={'Org Profile','Task'} and hits[0][1]['module']=='Org Profile'
+    assert k.anchors('Org Profile')==['Org Profile','Organisation Profile'] and k.anchors('Task')==[]
+
+def test_failed_answer_about_a_shown_screen_falls_back_to_the_screen_itself():
+    """Live: "Answer did not pass source checking" / "Empty generated answer" left the visitor with
+    "I could not finish checking the handbook". The screen being shown is a source in its own right."""
+    location={'id':'p9','path':'/global-config/facebook','page':'Global Config › Facebook','section':None,
+              'text':'Global Config › Facebook: Facebook, Add Account, Login With Facebook, Ad Accounts, Lead Forms, Connect Now'}
+    async def complete(messages,schema,**kw):
+        if 'valid' in schema['properties']:return {'valid':False,'reason':'Unsupported claim'}
+        return {'supported':True,'answer':'Facebook shows campaign analytics.','evidence_ids':['screen:p9#0'],'demo_requested':False,'include_module_list':False}
+    result=asyncio.run(knowledge(complete).answer('kya facebook integrate kar sakte hai',Decision(kind='product'),{},location=location))
+    assert result['grounded'] and result['mode']=='screen_text'
+    assert result['text'].startswith('This is the Global Config › Facebook screen in Leadrat, which shows Facebook, Add Account, Login With Facebook')
+    assert 'analytics' not in result['text']

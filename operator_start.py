@@ -33,9 +33,12 @@ if __name__=='__main__':
     os.environ.setdefault('BEACON_PREWARM_BROWSER','1')
     os.environ.setdefault('BEACON_WARM_KNOWLEDGE','1')
     provider=os.environ.setdefault('PLANNER_PROVIDER','local').strip().lower()
-    if provider!='local':raise SystemExit('Beacon uses local models only. Set PLANNER_PROVIDER=local.')
-    os.environ['BEACON_START_LOCAL_MODEL']='1'
-    print('Starting Beacon; local models will load in the background...',flush=True)
+    if provider not in {'local','deepseek'}:raise SystemExit('Set PLANNER_PROVIDER=local or PLANNER_PROVIDER=deepseek.')
+    if provider=='deepseek' and not os.getenv('DEEPSEEK_API_KEY','').strip():
+        raise SystemExit('PLANNER_PROVIDER=deepseek needs DEEPSEEK_API_KEY in .env.')
+    # The hosted model needs no local GPU model; the local one is started only when it is used.
+    os.environ['BEACON_START_LOCAL_MODEL']='1' if provider=='local' else '0'
+    print('Starting Beacon; '+('local models will load in the background...' if provider=='local' else 'conversation model: DeepSeek (hosted).'),flush=True)
     saved_login=Path(os.getenv('BEACON_BROWSER_STATE',ROOT/'.browser'/'crm-state.json')).is_file()
     if not (os.getenv('BEACON_LOGIN_USER','').strip() and os.getenv('BEACON_LOGIN_PASSWORD')) and not saved_login:
         user=input('Test CRM username (put BEACON_LOGIN_USER/PASSWORD in .env to skip; blank to sign in with login.ps1): ').strip()

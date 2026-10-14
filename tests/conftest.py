@@ -4,8 +4,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def no_hosted_calls(monkeypatch,tmp_path):
-    from app import qualify,handoff
+    from app import qualify,handoff,config
+    # Tests never reach a hosted model, whatever .env selects for the running app.
+    monkeypatch.setattr(config,'PROVIDER','local')
+    monkeypatch.setattr(config,'DEEPSEEK_API_KEY','')
     monkeypatch.setenv('BEACON_PREWARM_BROWSER','0')
+    monkeypatch.setenv('BEACON_REQUIRE_VISITOR_DETAILS','0')
+    monkeypatch.setenv('BEACON_USAGE_FILE',str(tmp_path/'usage.jsonl'))
+    monkeypatch.setenv('BEACON_REGISTRATION_DB',str(tmp_path/'registration.sqlite3'))
     monkeypatch.setenv('BEACON_START_LOCAL_MODEL','0')
     monkeypatch.delenv('QUAL_SLM_URL',raising=False)
     monkeypatch.delenv('QUAL_SLM_MODEL',raising=False)

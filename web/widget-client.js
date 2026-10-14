@@ -10,6 +10,9 @@
   let failures = 0, stopPending = false, pollRunning = false, frameLoopRunning = false, shownFrameURL = null, hasFrame = false;
   let lastStateError = '', stepsKey = '', firstRender = true;
   let pendingRequest = null;
+  let registrationOpened = false, registrationSubmitting = false, queuedRegistrationMessage = '';
+  let registrationEdited = false;
+  let quickReplyKey = '';
   let userEnded = false, reconnectTimer = null, reconnectAttempts = 0;
   function reconnect() {
     if (closed || userEnded || session || reconnectTimer || reconnectAttempts >= 3) return;
@@ -20,6 +23,7 @@
   const active = () => !!session && !ending && !closed;
   const ready = () => active() && ['ready','active','login_required'].includes(state?.status) && !state?.busy && !sending && !stopPending;
   // A new question may be sent while Beacon is working; it interrupts the running demonstration.
+  const registered = () => !state?.registration_required || !!state?.registration_accepted || state?.registration_status==='created';
   const canSend = () => active() && ['ready','active','login_required'].includes(state?.status) && !sending && !stopPending;
   let voiceHold = -1;
   // Latency marks per turn (performance.now() ms): heard = final speech result, sent, reply shown, audio playing.
@@ -29,25 +33,82 @@
   window.__beaconTimings = () => session ? request(endpoint('/timings')).then(r=>r.json()) : Promise.resolve(null);
   const mark = (name) => { const turn = latency[latency.length - 1]; if (turn && turn[name] == null) turn[name] = Math.round(performance.now()); };
   function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+  function setSpeechDraft(text) {
+    ui.message.value=text;
+    ui.message.setSelectionRange(text.length,text.length);
+    ui.message.scrollTop=ui.message.scrollHeight;
+    requestAnimationFrame(()=>{if(ui.message.value===text)ui.message.scrollTop=ui.message.scrollHeight;});
+  }
   function show(el, text) { setText(el, text || ''); el.hidden = !text; }
   const error = text => show(ui.error, text);
   const notice = text => show(ui.notice, text);
   function controls() {
     $('close').disabled = starting || ending;
     ui.start.hidden = !!session; ui.start.disabled = starting; setText(ui.start, starting ? 'Connecting…' : 'Start a session ↗');
-    ui.message.disabled = !canSend(); ui.send.disabled = !canSend() || !ui.message.value.trim(); ui.mic.disabled = !session || ending;
+    ui.message.disabled = !canSend(); ui.send.disabled = !canSend() || !ui.message.value.trim(); ui.mic.disabled = !canSend();
     ui.suggestions.hidden = !session; ui.suggestions.querySelectorAll('button').forEach(b=>b.disabled=!canSend());
     ui.end.disabled = !session || ending; ui.stop.disabled = !session || stopPending || !state?.busy;
     ui.replay.disabled = !active() || !state?.messages?.some(m=>m.role==='assistant');
+    registrationControls();
+    renderQuickReplies();
+  }
+  function renderQuickReplies() {
+    const box=$('quick-replies'), options=state?.quick_replies;
+    box.hidden=!(active() && registered() && options && !state?.busy && !sending);
+    if(!box.hidden)ui.suggestions.hidden=true;
+    const key=JSON.stringify(options || null);
+    if(key!==quickReplyKey){
+      quickReplyKey=key;
+      const list=$('quick-reply-options');list.replaceChildren();
+      if(options){
+        for(const option of options.options || []){
+          const b=document.createElement('button');b.type='button';b.textContent=option.label;
+          b.addEventListener('click',()=>{if(state?.quick_replies?.question===options.question && !state?.busy)send(option.message);});list.append(b);
+        }
+        const custom=document.createElement('button');custom.type='button';custom.className='quick-reply-secondary';custom.textContent=options.custom_label;
+        custom.addEventListener('click',()=>ui.message.focus());list.append(custom);
+        const skip=document.createElement('button');skip.type='button';skip.className='quick-reply-secondary';skip.textContent='Skip for now';
+        skip.addEventListener('click',()=>{if(state?.quick_replies?.question===options.question && !state?.busy)send(options.skip_message);});list.append(skip);
+      }
+    }
+    box.querySelectorAll('button').forEach(b=>b.disabled=!canSend() || !!state?.busy);
+  }
+  function registrationControls() {
+    const form=$('visitor-form'), busy=registrationSubmitting || state?.registration_status==='saving';
+    form.hidden=!active() || busy || !registrationOpened;
+    $('registration-start').hidden=!active() || registered() || registrationOpened;
+    $('registration-start').disabled=!canSend();
+    form.querySelectorAll('input,button').forEach(el=>el.disabled=busy);
+    form.querySelector('button[type="submit"]').disabled=busy;
+    setText($('visitor-status'),busy?'Saving your details…':registrationEdited?'Details updated. Select Save to continue.':state?.registration_status==='review_required'?'We couldn’t confirm this number. Enter a different number, or contact support.':state?.registration_status==='duplicate'?'This number is already registered. Enter a different phone number.':state?.registration_status==='failed'?'Please check the details above and try again.':'');
+    show($('registration-question'),queuedRegistrationMessage?'Your request: '+queuedRegistrationMessage:'');
+    const captureError=state?.registration_error;
+    $('registration-notice').hidden=!active() || busy || !captureError || registrationOpened;
+    setText($('registration-notice-text'),busy?'':captureError || '');
+    $('registration-retry').hidden=busy || !captureError;
+  }
+  function openRegistration(message='') {
+    registrationOpened=true;
+    if(message)queuedRegistrationMessage=message;
+    controls();
+    $('visitor-form').scrollIntoView({block:'nearest',behavior:'smooth'});
+    if(!registrationSubmitting && state?.registration_status!=='saving')$('visitor-form').elements.name.focus();
   }
   async function request(path, options = {}, target = session, timeoutMs = 15000) {
     const controller = new AbortController(); const timeout = setTimeout(()=>controller.abort(), timeoutMs);
     try {
       const response = await fetch(path,{...options,signal:controller.signal,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(target?{'X-Beacon-Token':target.token}:{}),...options.headers}});
       if (!response.ok) {
-        let detail = ''; try { const data = await response.json(); detail = typeof data.detail === 'string' ? data.detail : data.message || ''; } catch {}
+        let detail = '', fieldErrors={}; try {
+          const data = await response.json();
+          if(Array.isArray(data.detail)) {
+            const labels={phone:'Check the phone number and selected country.',email:'Enter a valid email address.',name:'Enter a full name between 2 and 75 characters.'};
+            for(const item of data.detail){const field=item.loc?.at(-1);if(labels[field])fieldErrors[field]=labels[field];}
+            detail=Object.values(fieldErrors).join(' ') || 'Please check the information you entered.';
+          } else detail=typeof data.detail === 'string' ? data.detail : data.message || '';
+        } catch {}
         const e = new Error(detail || (response.status===409 ? 'Another session or action is already running. Please wait and try again.' : 'Beacon could not complete that request. Please try again.'));
-        e.status = response.status; throw e;
+        e.status = response.status;e.fieldErrors=fieldErrors; throw e;
       }
       return response;
     } catch(e) { if(e.name==='AbortError') throw new Error('The connection timed out. Check that Beacon is running and try again.'); throw e; }
@@ -88,7 +149,7 @@
   }
   function render(next) {
     state = next;
-    const label = {ready:'Ready to explore',active:'Ready to explore',login_required:'Waiting for CRM sign-in',starting:'Preparing workspace',initializing:'Preparing workspace',stopped:'Walkthrough stopped',error:'Session needs attention',ended:'Session ended',closed:'Session ended'}[next.status] || 'Preparing workspace';
+    const label = {reconnecting:'Reconnecting your demo',ready:'Ready to explore',active:'Ready to explore',login_required:'Waiting for CRM sign-in',starting:'Preparing workspace',initializing:'Preparing workspace',stopped:'Walkthrough stopped',error:'Session needs attention',ended:'Session ended',closed:'Session ended'}[next.status] || 'Preparing workspace';
     setText(ui.status, next.busy ? 'Exploring your workspace…' : label);
     const dot = next.busy ? 'busy' : ['ready','active'].includes(next.status) ? 'ready' : '';
     if (ui['status-dot'].className !== dot) ui['status-dot'].className = dot;
@@ -107,11 +168,15 @@
     }
     renderSteps(Array.isArray(next.steps) ? next.steps : []);
     if (next.status === 'login_required') {
-      if (hasFrame) clearScreen();
+      // Preserve the last verified preview while authentication recovers.
       setText(ui['screen-status'], 'Waiting for CRM sign-in');
     }
     controls();
     talk.refresh();
+    if(registered() && queuedRegistrationMessage && canSend()) {
+      const question=queuedRegistrationMessage;queuedRegistrationMessage='';
+      queueMicrotask(()=>send(question));
+    }
   }
   async function poll(target) {
     if(!active() || target!==session || pollRunning) return;
@@ -199,7 +264,9 @@
         .then(r=>r.blob()).then(b=>b.type.startsWith('audio/') ? b : null).catch(()=>null);
       return item.audio;
     }
-    function lookahead() { queue.slice(0,2).forEach(fetchClip); }
+    const canStream = () => state?.tts_provider==='edge' && window.MediaSource?.isTypeSupported('audio/mpeg');
+    // The server already prepares upcoming parts; avoid duplicate buffered downloads when streaming.
+    function lookahead() { if(!canStream())queue.slice(0,2).forEach(fetchClip); }
     function offer(message) {
       if (spoken.has(message.id)) return;
       spoken.add(message.id);
@@ -209,6 +276,57 @@
       lookahead(); pump();
     }
     let currentKind = null;
+    function playStream(item) {
+      return new Promise(resolve => {
+        const controller=new AbortController(), source=new MediaSource(), url=URL.createObjectURL(source);
+        let settled=false, started=false, watchdog=null, reader=null;
+        const done=result=>{
+          if(settled)return;
+          settled=true;clearTimeout(watchdog);controller.abort();reader?.cancel().catch(()=>{});
+          player.onended=player.onerror=player.onplaying=player.ontimeupdate=null;
+          player.pause();player.removeAttribute('src');player.load();
+          stopCurrent=null;URL.revokeObjectURL(url);
+          // Never repeat a partially spoken reply through the fallback voice.
+          resolve(result==='failed' && started?'partial':result);
+        };
+        const arm=()=>{clearTimeout(watchdog);watchdog=setTimeout(()=>done('failed'),20000);};
+        stopCurrent=()=>done('stopped');
+        player.onended=()=>done('ok');player.onerror=()=>done('failed');
+        player.onplaying=()=>{started=true;mark('audio');if(currentKind!=='ack')mark('answer_audio');status('Speaking…');arm();};
+        player.ontimeupdate=arm;
+        const opened=new Promise(resolveOpen=>source.addEventListener('sourceopen',resolveOpen,{once:true}));
+        const aborted=new Promise((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true}));
+        player.src=url;arm();
+        (async()=>{
+          try {
+            const response=await fetch(endpoint('/speech?message_id='+encodeURIComponent(item.id)+'&part='+item.part+'&stream=true',item.target),{
+              headers:{'X-Beacon-Token':item.target.token},signal:controller.signal});
+            if(!response.ok || !response.body || !response.headers.get('content-type')?.startsWith('audio/'))throw new Error('No audio');
+            await Promise.race([opened,aborted]);
+            if(settled)return;
+            const buffer=source.addSourceBuffer('audio/mpeg');
+            reader=response.body.getReader();let requestedPlay=false;
+            while(!settled){
+              const {value,done:complete}=await reader.read();
+              if(complete)break;
+              arm();
+              await Promise.race([new Promise((resolveAppend,rejectAppend)=>{
+                const cleanup=()=>{buffer.removeEventListener('updateend',updated);buffer.removeEventListener('error',failed);};
+                const updated=()=>{cleanup();resolveAppend();};
+                const failed=()=>{cleanup();rejectAppend(new Error('Invalid audio'));};
+                buffer.addEventListener('updateend',updated);buffer.addEventListener('error',failed);
+                try{buffer.appendBuffer(value);}catch(e){cleanup();rejectAppend(e);}
+              }),aborted]);
+              if(settled)return;
+              if(!requestedPlay){requestedPlay=true;player.play().catch(e=>done(e?.name==='NotAllowedError'?'blocked':'failed'));}
+            }
+            if(!settled){if(!requestedPlay)throw new Error('Empty audio');source.endOfStream();}
+          } catch {if(!settled)done('failed');}
+        })();
+        // Cancellation can happen before any awaited operation subscribes to this promise.
+        aborted.catch(()=>{});
+      });
+    }
     function playBlob(blob) {
       return new Promise(resolve => {
         const url = URL.createObjectURL(blob); let settled = false, watchdog = null;
@@ -251,16 +369,20 @@
           const gen = generation, item = queue.shift(); lookahead();
           if (item.target !== session) continue;
           status('Preparing voice…');
-          const blob = await fetchClip(item);
-          if (gen !== generation) return;
           currentText = item.text; currentKind = item.kind || null;
-          let result = blob ? await playBlob(blob) : 'failed';
+          let result;
+          if(canStream())result=await playStream(item);
+          else {
+            const blob=await fetchClip(item);
+            if(gen!==generation)return;
+            result=blob?await playBlob(blob):'failed';
+          }
           if (gen !== generation || result === 'stopped') return;
-          if (result === 'failed') result = await speakText(item.text);
+          if (result === 'failed' && state?.tts_provider!=='soniox') result = await speakText(item.text);
           if (gen !== generation || result === 'stopped') return;
           remember();
           if (result === 'blocked') { queue.unshift(item); blocked = true; status('Tap anywhere in this window to turn on sound.'); return; }
-          if (result === 'failed') status('Voice is unavailable for this reply. You can read it above.');
+          if (result === 'failed' || result === 'partial') status('Voice is unavailable for this reply. You can read it above.');
         }
       } finally { if (run === runId) { playing = false; if (!blocked && !queue.length) { status(idleText()); onIdle?.(); } } }
     }
@@ -290,133 +412,37 @@
       recentSpeech() { const now = performance.now(); return [currentText, ...recent.filter(r => now - r.at < 3500).map(r => r.text)].filter(Boolean).join(' '); }};
   })();
 
-  // ---- Speak instead of typing (browser speech recognition: Chrome/Edge). Talk mode listens all the time,
-  // including while Beacon speaks or works: speaking over Beacon stops it at once and runs the new request.
-  // Beacon's own voice is kept out by an echo-cancelled microphone track where the browser accepts one,
-  // and by ignoring transcripts that only repeat what Beacon just said. Typing always works too.
+  // ---- Soniox streaming speech recognition. No browser recognition fallback.
   const talk = (() => {
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const languages = {'en-IN':'🗣 English','hi-IN':'🗣 हिन्दी'};
-    const STOP_WORDS = /^(stop|stop it|please stop|stop please|wait|ruko|ruk jao|rukiye|bas|bas karo|chup|रुको|रुक जाओ|रुकिए|बस|बस करो|चुप)$/i;
-    let lang = languages[prefs.get('beacon.micLang')] ? prefs.get('beacon.micLang') : 'en-IN';
-    // Newer recognition (with on-device support) also accepts a MediaStreamTrack; older ones use the default mic.
-    let useTrack = typeof Recognition?.available === 'function';
-    let recognition = null, listening = false, on = false, restart = null, flushTimer = null;
-    let heard = '', typed = null, track = null, quickEnds = 0, lastStart = 0;
-    const placeholder = ui.message.getAttribute('placeholder');
-    const status = text => setText(ui['voice-status'], text);
-    const listeningText = () => lang === 'hi-IN' ? '🎤 सुन रहा हूँ… कभी भी बोलिए, मेरे बोलते समय भी।' : '🎤 Listening… speak any time, even while I am talking.';
-    const words = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
-    const pairs = ws => ws.slice(1).map((w, i) => ws[i] + ' ' + w);
-    function currentReply() {
-      const messages = state?.messages || [], lastUser = messages.map(m=>m.role).lastIndexOf('user');
-      return messages.slice(lastUser + 1).filter(m=>m.role==='assistant').map(m=>m.text).join(' ');
+    let on=false, listening=false, lang='en', typed=null;
+    const status=t=>setText(ui['voice-status'],t);
+    function paint(){
+      ui.mic.setAttribute('aria-pressed',String(on));ui.mic.classList.toggle('listening',listening);
+      ui.mic.title=on?'Tap to finish speaking':'Speak with Soniox';
+      setText(ui['mic-lang'],lang==='en'?'🗣 English':'🗣 हिन्दी');
     }
-    // Echo repeats Beacon's phrases in order, so compare word pairs, not single words: a real question
-    // such as "how to change status" shares words with a reply but rarely its word sequence.
-    function isEcho(text) {
-      const recent = voiceQueue.recentSpeech(); if (!recent) return false;
-      const said = words(recent + ' ' + currentReply()), got = words(text);
-      if (!got.length) return true;
-      if (got.length === 1) return false; // Short replies like "developer" and "yes" are valid answers.
-      const known = new Set(pairs(said)), heardPairs = pairs(got);
-      return heardPairs.filter(p => known.has(p)).length / heardPairs.length > 0.5;
+    function echo(text){
+      const recent=voiceQueue.recentSpeech().toLowerCase();
+      return text.length>12 && recent.includes(text.toLowerCase());
     }
-    function paint() {
-      ui.mic.hidden = !Recognition; ui['mic-lang'].hidden = !Recognition;
-      ui.mic.setAttribute('aria-pressed', String(on)); ui.mic.classList.toggle('listening', on && listening);
-      ui.mic.title = on ? 'Listening all the time · tap to turn off' : 'Talk instead of typing';
-      ui.message.placeholder = on ? (state?.busy ? 'Listening… speak to change the request' : 'Listening… speak any time')
-        : state?.busy ? 'Type to change the request…' : placeholder;
-      setText(ui['mic-lang'], languages[lang]);
-    }
-    async function micTrack() {
-      if (!useTrack) return null;
-      if (track?.readyState === 'live') return track;
-      try { track = (await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})).getAudioTracks()[0]; }
-      catch (e) { track = null; if (e?.name === 'NotAllowedError') throw e; }
-      return track;
-    }
-    function releaseMic() { try { track?.stop(); } catch {} track = null; }
-    function flush() {
-      clearTimeout(flushTimer); flushTimer = null;
-      const text = [typed, heard].map(x => (x || '').trim()).filter(Boolean).join(' ');
-      heard = ''; typed = null;
-      if (!text) return;
-      if (STOP_WORDS.test(text.replace(/[.!?।,]+/g, '').trim())) { ui.message.value = ''; controls(); stop(); return; }
-      if ($('speech-auto-send')?.checked) send(text);
-      else { ui.message.value=text; controls(); status('Check the words, edit if needed, then press Send.'); }
-    }
-    function onResult(e) {
-      let finals = '', interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) finals += ' ' + t; else interim += ' ' + t; }
-      if (finals.trim() && !isEcho(finals)) { heard += ' ' + finals.trim(); heardAt = Math.round(performance.now()); }
-      const live = interim.trim() && !isEcho(interim) ? interim.trim() : '';
-      const current = (heard + ' ' + live).trim();
-      if (!current) return;
-      if (typed === null) typed = ui.message.value.trim();
-      // The visitor is speaking: cut Beacon off at once (barge-in).
-      if (voiceQueue.speaking && (words(current).length >= 2 || heard.trim())) voiceQueue.cancel();
-      ui.message.value = [typed, current].filter(Boolean).join(' '); controls();
-      clearTimeout(flushTimer);
-      // Send after a short pause, so a question spoken with a breath in the middle is not split in two.
-      // Chrome sends a final result only after the visitor pauses, so a short grace period is enough.
-      if (heard.trim()) flushTimer = setTimeout(flush, live ? 1800 : 1200);
-    }
-    function schedule(ms) { if (on && !restart) restart = setTimeout(() => { restart = null; listen(); }, ms); }
-    async function listen() {
-      if (!Recognition || listening || !on || !active()) return;
-      let input = null;
-      try { input = await micTrack(); }
-      catch { on = false; paint(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); return; }
-      if (!on || listening || !active()) return;
-      const r = new Recognition(); recognition = r;
-      r.lang = lang; r.interimResults = true; r.continuous = true; r.maxAlternatives = 3;
-      r.onresult = onResult;
-      r.onerror = e => {
-        if (['not-allowed','service-not-allowed'].includes(e.error)) { on = false; releaseMic(); status('Microphone is blocked. Allow it from the address bar, then tap 🎤 again. You can still type.'); }
-        else if (e.error === 'audio-capture') { if (input) useTrack = false; else { on = false; status('No microphone was found. You can still type.'); } }
-        else if (e.error === 'network') status('Speech recognition lost its connection; retrying…');
-        else if (input && !['no-speech','aborted'].includes(e.error)) useTrack = false;
-      };
-      r.onend = () => {
-        if (recognition !== r) return;
-        recognition = null; listening = false;
-        if (heard.trim()) flush();
-        // Chrome ends continuous recognition periodically; restart, backing off if it keeps ending at once.
-        quickEnds = performance.now() - lastStart < 2000 ? quickEnds + 1 : 0;
-        paint();
-        if (on) schedule(quickEnds > 3 ? 3000 : 250); else releaseMic();
-      };
-      lastStart = performance.now();
-      try {
-        if (input) { try { r.start(input); } catch { useTrack = false; r.start(); } } else r.start();
-        listening = true;
-      } catch { recognition = null; listening = false; schedule(1000); }
-      paint();
-    }
-    function abortRecognition() { if (recognition) { const r = recognition; recognition = null; listening = false; try { r.abort(); } catch {} } }
-    function toggle() {
-      if (!Recognition) return;
-      voiceQueue.unlock();
-      if (on) {
-        on = false; clearTimeout(restart); restart = null;
-        if (heard.trim()) flush(); else { heard = ''; typed = null; }
-        abortRecognition(); releaseMic(); paint(); status('Talk mode off. Type, or tap 🎤 to speak.'); return;
+    const input=new window.BeaconSonioxInput({
+      getKey:async()=>{const target=session;const result=await request(endpoint('/speech-key',target),{method:'POST'},target);if(target!==session)throw new Error('Session ended');return result.json();},
+      onState:value=>{on=!['off'].includes(value);listening=value==='listening';paint();if(value==='listening')status('Listening with Soniox…');},
+      onError:status,
+      onText:text=>{if(!text||echo(text))return;if(typed===null)typed=ui.message.value.trim();if(voiceQueue.speaking)voiceQueue.cancel();setSpeechDraft([typed,text].filter(Boolean).join(' '));controls();},
+      onUtterance:text=>{
+        if(!text||echo(text))return;heardAt=Math.round(performance.now());
+        const answer=[typed,text].filter(Boolean).join(' ');typed=null;
+        if($('speech-auto-send')?.checked){ui.message.value='';send(answer);}
+        else {setSpeechDraft(answer);controls();status('Check the words, then press Send.');}
       }
-      // Tapping the mic means "I want to talk now": stop Beacon's narration first.
-      on = true; quickEnds = 0; voiceQueue.cancel(); paint(); status(listeningText());
-      listen();
-    }
-    function shutdown() { on = false; clearTimeout(restart); restart = null; clearTimeout(flushTimer); heard = ''; typed = null; abortRecognition(); releaseMic(); paint(); }
-    function switchLanguage() {
-      lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN'; prefs.set('beacon.micLang', lang); paint();
-      // Restart so the new language applies straight away.
-      if (on) { abortRecognition(); status(listeningText()); schedule(150); }
-    }
-    voiceQueue.onIdle = () => { if (on) status(listeningText()); };
-    paint();
-    return {toggle, shutdown, switchLanguage, refresh() { paint(); schedule(250); }, get on() { return on; }};
+    });
+    return {get on(){return on;},toggle(){
+      if(on){input.stop();return;}
+      if(!active())return;
+      if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){status('This browser cannot record audio. Please type.');return;}
+      typed=null;voiceQueue.cancel();input.start(lang);
+    },shutdown(){typed=null;input.abort();},switchLanguage(){lang=lang==='en'?'hi':'en';if(on)input.abort();paint();},refresh:paint};
   })();
 
   async function start() {
@@ -432,6 +458,8 @@
       reconnectAttempts=0;
       session={id:next.id,token:next.token};state=next;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
       pendingRequest=null;
+      registrationOpened=false;registrationSubmitting=false;queuedRegistrationMessage='';
+      registrationEdited=false;
       // Server-side voice preparation starts once it knows the preference.
       request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:voiceQueue.enabled})}).catch(()=>{});
       render(next);
@@ -443,6 +471,7 @@
   }
   async function send(message) {
     if(!message.trim() || !canSend())return;
+    if(!registered()){openRegistration(message.trim());ui.message.value='';controls();return;}
     const target=session,text=message.trim(),interrupt=!!state?.busy;
     // A response can time out after the server accepted it. Reuse the identifier on retry.
     if (!pendingRequest || pendingRequest.text!==text) pendingRequest={text,id:crypto.randomUUID()};
@@ -493,6 +522,41 @@
     }
   });
   window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
+  const visitorPhone=window.BeaconPhoneField($('visitor-phone'),$('phone-error'));
+  function registrationEdit(){
+    registrationEdited=true;
+    error('');
+    controls();
+  }
+  $('visitor-form').addEventListener('input',registrationEdit);
+  $('visitor-phone').addEventListener('countrychange',registrationEdit);
+  $('registration-start').addEventListener('click',()=>openRegistration());
+  $('registration-retry').addEventListener('click',()=>openRegistration());
+  $('visitor-form').addEventListener('submit',async e=>{
+    e.preventDefault();if(!session || registrationSubmitting || ['saving','created'].includes(state?.registration_status) || !e.currentTarget.reportValidity())return;
+    const form=e.currentTarget;const fields=new FormData(form);
+    const target=session;
+    // Hide the form only after local validation; never claim the CRM has saved yet.
+    registrationSubmitting=true;error('');lastStateError='';
+    try {
+      const number=await visitorPhone.getNumber();
+      if(!number)return;
+      registrationEdited=false;
+      registrationOpened=false;controls();
+      fields.set('phone',number);
+      const response=await request(endpoint('/visitor',target),{method:'POST',body:JSON.stringify(Object.fromEntries(fields))},target);
+      const result=await response.json();
+      if(target===session){
+        registrationSubmitting=false;
+        if(!result.accepted)registrationOpened=true;
+        render({...state,registration_status:result.status || 'saving',registration_accepted:!!result.accepted,registration_error:null});
+        ui.message.focus();
+        poll(target);
+      }
+    }
+    catch(e){if(target===session){registrationOpened=true;error(e.message);if(e.fieldErrors?.phone)visitorPhone.showError(e.fieldErrors.phone);}}
+    finally{if(target===session){registrationSubmitting=false;controls();}}
+  });
   voiceQueue.setEnabled(voiceQueue.enabled);
   controls();
   start();

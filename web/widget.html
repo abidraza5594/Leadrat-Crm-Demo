@@ -5,7 +5,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Beacon · Live demo</title>
+    <link rel="stylesheet" href="/vendor/intl-tel-input/css/intlTelInput.css">
     <link rel="stylesheet" href="/widget.css">
+    <script src="/vendor/intl-tel-input/js/intlTelInput.min.js" defer></script>
+    <script src="/visitor-phone.js" defer></script>
+    <script src="/soniox-input.js" defer></script>
     <script src="/widget-client.js" defer></script>
 </head>
 
@@ -44,6 +48,23 @@
             </div>
             <div id="notice" class="notice" role="status" hidden></div>
             <div id="error" class="error" role="alert" hidden></div>
+            <div id="registration-notice" class="notice" role="status" hidden>
+                <span id="registration-notice-text"></span>
+                <button id="registration-retry" type="button" hidden>Update details</button>
+            </div>
+            <form id="visitor-form" class="visitor-form" hidden>
+                <h3>Before we start your demo</h3>
+                <p>Please share your details to register, then we’ll continue your demo.</p>
+                <p id="registration-question" hidden></p>
+                <label>Full name<input name="name" autocomplete="name" required minlength="2" maxlength="75"></label>
+                <label>Email<input name="email" type="email" autocomplete="email" required maxlength="254"></label>
+                <label for="visitor-phone">Phone number</label>
+                <input id="visitor-phone" name="phone" type="tel" autocomplete="tel" required aria-describedby="phone-hint phone-error">
+                <small id="phone-hint">Choose your country, then enter your phone number.</small>
+                <small id="phone-error" class="field-error" role="alert" hidden></small>
+                <button class="primary" type="submit">Save my details and start demo ↗</button>
+                <p id="visitor-status" role="status"></p>
+            </form>
             <div id="messages" class="messages" role="log" aria-live="polite" aria-label="Conversation">
                 <div class="welcome">
                     <div class="eyebrow">HELLO, I'M BEACON</div>
@@ -53,6 +74,11 @@
             </div>
             <div class="actions"><button id="start" class="primary">Start a session <span
                         aria-hidden="true">↗</span></button>
+                <button id="registration-start" class="primary" hidden>Start my demo ↗</button>
+                <section id="quick-replies" class="quick-replies" aria-label="Answer the current question" hidden>
+                    <p>Choose an answer, or type your own</p>
+                    <div id="quick-reply-options" class="quick-reply-options"></div>
+                </section>
                 <div id="suggestions" class="suggestions" hidden><button data-prompt="Show leads">Show leads
                         ↗</button><button data-prompt="How to change status">Change lead status ↗</button><button
                         data-prompt="Explain lead sources">Explain lead sources ↗</button></div>
@@ -66,8 +92,7 @@
                         disabled>↻ Replay</button><button id="stop" disabled>■ Stop</button></div>
                 <p id="voice-status" class="voice-status" role="status">Voice on · Beacon reads each reply aloud.</p>
                 <label class="speech-setting"><input id="speech-auto-send" type="checkbox"> Send speech automatically after a pause</label>
-                <p class="voice-disclosure">Voice replies may use an online service. Speaking uses your browser’s speech
-                    recognition (Chrome sends the audio to Google).</p>
+                <p class="voice-disclosure">Voice input is transcribed by Soniox. Spoken replies use Microsoft voices.</p>
                 <div class="end-row"><span id="privacy">A live, guided product session</span><button id="end"
                         disabled>End session</button></div>
             </div>

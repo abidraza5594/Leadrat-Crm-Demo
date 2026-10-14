@@ -29,8 +29,10 @@ async def one(locator, description, click=False):
 
 async def walkthrough(worker, feature):
     key=feature['id'];page=worker.page
+    worker.walkthrough_feature=feature
     if key in {'add_lead','bulk_upload','lead_sources'}:
-        fields=await worker.open_feature({**feature,'id':'add_lead' if key=='lead_sources' else key})
+        already_add='/leads/add-lead' in page.url and key in {'add_lead','lead_sources'}
+        fields=[] if already_add else await worker.open_feature({**feature,'id':'add_lead' if key=='lead_sources' else key})
         if key=='lead_sources':
             await one(page.locator('ng-select[formcontrolname="leadSource"]'),'Lead source')
             return 'The Source control on Add Lead is visible.'
@@ -64,7 +66,9 @@ async def walkthrough(worker, feature):
             except Exception:raise DemoError('No visible lead is available for a record walkthrough. '+feature['facts'][0])
             choices=await visible(rows)
             if not choices:raise DemoError('No visible lead is available.')
+            worker.preview_row_id=await choices[0].evaluate("el=>el.closest('[row-id]')?.getAttribute('row-id') || null")
             await choices[0].click()
+            if hasattr(worker,'remember_checkpoint'):await worker.remember_checkpoint()
         await one(preview,'Lead preview')
         tab={'status':'Status','meeting':'Status','site_visit':'Status','booking':'Status',
              'appointment_done':'Status','notes':'Notes','history':'History','documents':'Document'}.get(key,'Overview')

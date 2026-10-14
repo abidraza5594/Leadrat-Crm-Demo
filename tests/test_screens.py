@@ -24,25 +24,29 @@ def screens(tmp_path):
 def test_only_in_app_paths_are_navigable(tmp_path):
     assert {e['path'] for e in screens(tmp_path).entries}=={'/global-config','/attendance'}
 
-def test_model_chooses_among_candidates_or_none(tmp_path,monkeypatch):
-    import app.screens as module
-    monkeypatch.setattr(module,'ROOT',tmp_path)
-    s=screens(tmp_path);calls=[]
-    async def completion(messages,schema,**kwargs):
-        payload=json.loads(messages[-1]['content']);calls.append((payload,schema))
-        return {'option':'p1' if 'integration' in payload['latest_message'] else 'none'}
-    async def run():
-        await s.prepare(Encoder())
-        found=await s.choose(completion,Encoder(),'what is integration',[{'role':'user','text':'hi'}])
-        assert found['id']=='p1'
-        assert await s.choose(completion,Encoder(),'tell me a joke',[]) is None
-    asyncio.run(run())
-    payload,schema=calls[0]
-    assert 'none' in schema['properties']['option']['enum'] and payload['conversation']==[{'role':'user','text':'hi'}]
-
 def test_generated_map_covers_the_crm():
     from app.screens import MAP
     data=json.loads(MAP.read_text('utf8'))
     paths={e['path'] for e in data['entries']}
     assert data['pages']>=100 and all(p.startswith('/') for p in paths)
     assert not any(p.startswith('/login') for p in paths)
+
+def test_words_shown_on_a_screen_are_found_whatever_the_spelling():
+    """Live report: "weebhook" / "let me about webhook" opened Leadrat AI, though Webhook is an
+    integration card on Global Config. Words on the screen count, typed apart, together or misspelled."""
+    s=Screens()
+    for question,page in [('weebhook','Global Config'),('let me about webhook','Global Config'),('99acres kaise connect kare','Global Config')]:
+        scores=s.content_match(question)
+        assert s.entries[int(scores.argmax())]['page'].startswith(page),question
+
+def test_search_returns_ranked_options_including_walkthroughs(tmp_path,monkeypatch):
+    """The search only finds options (pages, sections, walkthroughs); it never decides."""
+    import app.screens as module
+    monkeypatch.setattr(module,'ROOT',tmp_path)
+    s=screens(tmp_path);s.include({'leads':{'title':'Leads workspace','intent_description':'Leads list','facts':['Manage leads.']}})
+    async def run():
+        await s.prepare(Encoder())
+        return await s.candidates(Encoder(),'attendance clock in')
+    ranked=asyncio.run(run())
+    assert ranked[0][1]['path']=='/attendance' and any(e.get('walkthrough')=='leads' for _,e,_ in ranked)
+    assert not hasattr(module,'decisive') and not hasattr(s,'choose')

@@ -117,3 +117,31 @@ The active knowledge path generates and verifies answers locally, so product que
 ## Reviewed handbook questions (4 October 2026)
 
 `knowledge/handbook-faq.json` and `app/handbook_faq.py` preserve the historical reviewed-question implementation. The live contextual answer path no longer calls this exact-wording lookup. The older checks in `outputs/demo-readiness-2026-10-04/Beacon_Demo_Checks.html` describe that earlier version and must not be presented as results for the current Qwen3 model.
+
+## Registration phone field and speech (12 October 2026)
+
+Registration uses `intl-tel-input` 29.5.4 with a searchable country selector, India selected initially, and package-based phone validation. The frontend submits the normalized international number. Package browser assets and flags are served locally from `web/vendor/intl-tel-input`; no CDN or country lookup service is required. To refresh the pinned assets, run `npm ci --ignore-scripts` and then `npm run vendor` from `web/`. The lockfile and MIT license are included.
+
+Current speech configuration: `STT_PROVIDER=soniox` and `TTS_PROVIDER=edge`. Soniox transcribes visitor speech; Microsoft's previous `edge-tts` voice reads replies. Soniox TTS is disabled. Set `SONIOX_API_KEY` only in the untracked `.env` file.
+
+Edge speech now streams MP3 chunks through the authenticated `/speech?stream=true` endpoint to a MediaSource player, beginning playback before synthesis finishes. Upcoming parts share the existing bounded synthesis cache; replay does not regenerate cached audio. Stop and new questions abort the current browser download/playback. Browsers without MP3 MediaSource support use the complete-clip path. This streams audio for available answer parts, not unfinished model tokens. `edge-tts` is pinned to 7.3.1, which passed the live provider check on 14 October 2026 after 7.2.8 returned HTTP 403. One sample delivered its first audio chunk in 734 ms and completed in 1,844 ms; these are sample provider timings, not an end-to-end latency guarantee.
+
+Visitor onboarding shows the welcome conversation first. Selecting Start my demo or sending a first request opens the contact form. The widget keeps that request and submits it as soon as Beacon accepts validated contact details, while CRM capture runs in the background. Registration calls the separate capture API; it never navigates, fills, or saves in the demo browser. A duplicate lookup can reject an existing number; the visitor can correct the phone and retry. Registration errors appear on the form, without spoken internal save warnings. Inputs stay locked only during a pending save. An uncertain save blocks another submission for that same normalized phone number; a different phone can be submitted. Existing uncertain receipts are preserved rather than reset blindly.
+
+
+### Visitor capture destination
+
+The initial visitor form registers via a server-to-server API in **Surya QA** (`https://surya.leadrat.info/`), separately from the demonstration tenant. Configure `BEACON_REGISTRATION_API_BASE=https://qa-lrb-webapi.leadrat.info`, `BEACON_REGISTRATION_TENANT=surya`, and a dedicated Surya bearer credential in `BEACON_REGISTRATION_TOKEN`. Keep the credential in ignored `.env`; it is never returned to the widget. The demo browser cookies and login are not used. Configure BEACON_REGISTRATION_IDENTITY_BASE, BEACON_REGISTRATION_USERNAME and BEACON_REGISTRATION_PASSWORD for server-side login and expired-token renewal. Authentication is cached in memory. A rejected read-only preflight may sign in once and repeat; Add Lead is never blindly replayed. Missing/invalid credentials fail registration; there is no browser fallback.
+
+The backend validates international numbers with phonenumbers, checks `GET /api/v1/lead/contactno`, then sends name, email, split country code/number, optional company and Website source to `POST /api/v1/lead`, using the tenant and Bearer headers from the existing CRM API contract. Success requires `succeeded: true` and a nonempty UUID in `data`. Surya QA login, visitor creation and read-back were verified on 2026-10-13. Empty contact lookup in this tenant returns succeeded=false with null data and no error. The enquiry currency is read from tenant global settings. Other tenants still need contract validation.
+
+Receipts are scoped to API host + tenant + phone, independently of old demo receipts. A committed receipt precedes the POST. Ambiguous writes are never automatically retried; confirmed validation/authentication rejection may be corrected and retried. A phone change permits a new request. This is local at-most-once protection, not a claim of server-side idempotency. A production service credential/refresh lifecycle and multi-instance shared receipts remain deployment considerations.
+
+User-requested Add Lead walkthroughs are separate and still use the demo CRM. Initial registration does not move the demo screen or wait for its browser to initialize.
+
+
+### Background visitor registration
+
+Save hides the valid form immediately; the local API acknowledges with accepted=true and status=saving without waiting for Surya. Conversation access is based on accepted details, independently of the CRM save result. The widget sends the queued first question once and displays a quiet background status. Failed capture offers Update details without stopping the demo or speaking an unrelated save/error message. The contact form values are preserved.
+
+Registration errors are isolated from demo errors. Accepted capture jobs survive closing/ending the viewer session; orderly backend shutdown gives them up to 30 seconds to finish. This is an in-process background task, not a persistent distributed queue: forcibly terminating the server can interrupt work. Existing durable receipts still prevent ambiguous Add Lead writes from being blindly repeated.

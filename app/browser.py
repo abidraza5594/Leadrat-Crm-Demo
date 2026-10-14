@@ -14,6 +14,7 @@ class DemoError(Exception):pass
 
 NAV='a.nav-item,.module-navbar a,[data-ai-nav-route]'
 LOGIN_FIELDS='#inpLoginPassword,input[type="password"]'
+CLOSE_TIMEOUT=3.0
 LOGIN_BLOCKED=re.compile(r'\baccount (?:has been|is) locked\b|\b(?:must|need to|required to) reset (?:your )?password\b|\bpassword reset (?:is )?required\b',re.I)
 
 async def any_visible(locator):
@@ -39,6 +40,53 @@ class BrowserWorker:
         # Operator-facing reason when automatic sign-in did not complete; never includes field values.
         self.login_problem=None
         self.state_mtime=0.0
+        self.checkpoint=None
+        self.preview_row_id=None
+        self.walkthrough_feature=None
+        self.location_section=None
+
+    async def remember_checkpoint(self):
+        if not await self.authenticated():return
+        parsed=urlsplit(self.page.url)
+        if '{0.scheme}://{0.netloc}'.format(parsed)!=config.CRM_ORIGIN:return
+        values=[]
+        if self.demo_form_signature and self.demo_form_signature==await self.form_signature():
+            values=await self.page.locator('input[formcontrolname],textarea[formcontrolname]').evaluate_all(
+                "els=>els.filter(e=>e.type!=='password' && !['radio','checkbox','file','hidden'].includes(e.type)).map(e=>({name:e.getAttribute('formcontrolname'),value:e.value})).filter(e=>e.value).slice(0,40)")
+        self.checkpoint={'url':self.page.url,'row_id':self.preview_row_id,
+            'feature':self.walkthrough_feature,'section':self.location_section,'fields':values,
+            'scroll':await self.page.evaluate('({x:scrollX,y:scrollY})')}
+
+    async def restore_checkpoint(self):
+        point=self.checkpoint
+        if not point:return
+        parsed=urlsplit(point['url'])
+        if '{0.scheme}://{0.netloc}'.format(parsed)!=config.CRM_ORIGIN or parsed.path.startswith('/login'):
+            raise DemoError('Invalid saved demo location.')
+        await self.page.goto(point['url'],wait_until='domcontentloaded',timeout=30000)
+        await self.settle(timeout=8000)
+        if not await self.signed_in():raise DemoError('CRM sign-in expired again.')
+        if urlsplit(self.page.url).path!=parsed.path:raise DemoError('The previous page is no longer available.')
+        if point.get('row_id'):
+            # AG Grid's getRowId uses the CRM record ID; never substitute the first lead.
+            row=self.page.locator('[row-id]').filter(has=self.page.locator('lead-name-section'))
+            selected=None
+            for i in range(await row.count()):
+                if await row.nth(i).get_attribute('row-id')==point['row_id']:selected=row.nth(i);break
+            if selected is None:raise DemoError('The previous lead is not visible after sign-in. I did not open a different lead.')
+            await selected.locator('lead-name-section .header-6.text-secondary').click()
+        if point.get('feature'):
+            from .lead_browser import walkthrough
+            await walkthrough(self,point['feature'])
+        for item in point.get('fields',[]):
+            # Fixed formcontrolname values captured from this page, escaped as CSS strings.
+            field=self.page.locator('[formcontrolname='+json.dumps(item['name'])+']')
+            if await field.count()==1 and await field.is_visible():await field.fill(item['value'])
+        if point.get('fields'):await self.remember_demo_form()
+        if point.get('section'):
+            section=self.page.get_by_text(point['section'],exact=True)
+            if await section.count():await section.first.scroll_into_view_if_needed()
+        else:await self.page.evaluate('p=>scrollTo(p.x,p.y)',point['scroll'])
 
     async def form_signature(self):
         values=await self.page.locator('input,textarea,select,ng-select').evaluate_all("els=>els.map(el=>[el.tagName,el.getAttribute('formcontrolname'),el.value,el.checked,el.tagName==='NG-SELECT'?el.innerText:''])")
@@ -240,6 +288,7 @@ class BrowserWorker:
         if not path.startswith('/') or '://' in path:raise DemoError('That screen location is not valid.')
         async with self.lock:
             await self.leave_screen()
+            self.preview_row_id=None;self.walkthrough_feature=None;self.location_section=location.get('section')
             page=self.page
             if urlsplit(page.url).path.rstrip('/')!=path.rstrip('/'):
                 # In-app navigation through the CRM's own router, the same as following one of its links.
@@ -276,6 +325,7 @@ class BrowserWorker:
         async with self.lock:
             page=self.page
             own_changes=await self.leave_screen()
+            self.preview_row_id=None;self.walkthrough_feature=None;self.location_section=None
             if module=='leads' and urlsplit(page.url).path.rstrip('/')=='/leads/manage-leads':
                 listing=page.locator('manage-leads')
                 if await listing.count()==1 and await listing.is_visible():
@@ -348,10 +398,12 @@ class BrowserWorker:
         # Keep tokens the CRM refreshed during this session for the next hidden browser.
         from contextlib import suppress
         with suppress(Exception):
-            if self.context and await self.authenticated():await self.save_state()
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                if self.context and await self.authenticated():await self.save_state()
         # A failed page/state operation must never strand the Chromium process
         # or its Playwright transport after the session ends.
         for resource,method in ((self.context,'close'),(self.browser,'close'),(self.pw,'stop')):
             if resource:
-                with suppress(Exception):await getattr(resource,method)()
+                with suppress(Exception):
+                    async with asyncio.timeout(CLOSE_TIMEOUT):await getattr(resource,method)()
         self.context=self.browser=self.pw=None

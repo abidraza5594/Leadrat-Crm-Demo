@@ -57,7 +57,9 @@ def array_field(obj,name):
 class Source:
     def __init__(self,root):
         self.root=Path(root);self.app=self.root/'src'/'app'
-        self.files={p:p.read_text('utf8',errors='ignore') for p in self.app.rglob('*.ts') if not p.name.endswith('.spec.ts')}
+        # Commented-out code is not part of the product: drop whole-line and block comments.
+        self.files={p:re.sub(r'/\*.*?\*/','',re.sub(r'^[ 	]*//.*$','',p.read_text('utf8',errors='ignore'),flags=re.M),flags=re.S)
+                    for p in self.app.rglob('*.ts') if not p.name.endswith('.spec.ts')}
         self.classes={}
         for path,text in self.files.items():
             for name in re.findall(r'export\s+class\s+(\w+)',text):self.classes[name]=path
@@ -71,6 +73,7 @@ class Source:
                     if selector:self.selectors[selector]=template
         i18n=self.root/'src'/'assets'/'i18n'/'en.json'
         self.english=json.loads(i18n.read_text('utf8')) if i18n.is_file() else {}
+        self.landings={}
 
     def translate(self,key):
         value=self.english
@@ -126,7 +129,11 @@ class Source:
         for obj in self.routes_of(file) if routes is None else routes:
             fields=own_fields(obj)
             path=string_field(fields,'path')
-            if path is None or path=='**' or string_field(fields,'redirectTo') is not None:continue
+            redirect=string_field(fields,'redirectTo')
+            if path=='' and redirect and prefix:
+                # The page a module's own address opens: its landing page.
+                self.landings.setdefault(prefix,(redirect if redirect.startswith('/') else prefix+'/'+redirect).strip('/'))
+            if path is None or path=='**' or redirect is not None:continue
             if re.search(r'canActivate\s*:\s*\[[^\]]*NoAuthGuard',obj):continue  # pages for signed-out visitors (sign-in, password reset)
             full='/'.join(p for p in (prefix,path) if p)
             component=re.search(r'\bcomponent\s*:\s*(\w+)',fields)
@@ -138,6 +145,19 @@ class Source:
                 target=self.classes.get(lazy.group(2))
                 if target and (target,full) not in seen:
                     seen.add((target,full));yield from self.walk(target,full,seen)
+
+    def constant_labels(self,file):
+        """Human-readable names in the UPPER_CASE constant arrays a component imports and uses."""
+        found=[];code=self.files.get(file,'')
+        for name,target in self.imports(file).items():
+            if not re.fullmatch(r'[A-Z][A-Z0-9_]+',name) or len(re.findall(r'\b'+name+r'\b',code))<2:continue
+            for obj in self.array(target,name):
+                for key,value in re.findall(r"\b(\w+)\s*:\s*['\"]([^'\"]{2,60})['\"]",own_fields(obj)):
+                    value=self.translate(value) or value
+                    if re.search(r'[A-Za-z]',value) and (' ' in value or value[:1].isupper()) and not re.fullmatch(r'[A-Z_]+\.[\w.-]+',value) \
+                       and not re.search(r'[/\\]|\.(?:svg|png|jpg)$',value):
+                        found.append(value)
+        return list(dict.fromkeys(found))
 
     def sidebar(self):
         """Route -> label for every sidebar entry and its sub-entries, as the CRM renders them."""
@@ -173,20 +193,23 @@ class Source:
         for m in re.finditer(r'>([^<>]+)<',html):
             text=resolve(m.group(1))
             if 2<=len(text)<=60 and re.search(r'[A-Za-z]',text):found.append(('text',text))
-        if depth<2:
+        if depth<1:
             for tag in set(re.findall(r'<([a-z][\w]*-[\w-]+)\b',html)):
                 child=self.selectors.get(tag)
                 if child:found+=[('text',t) for _,t in self.texts(child,depth+1,seen)]
         return found
 
 def is_title(text):
-    """A section title rather than a message: short, and not a sentence, question or exclamation."""
-    return 2<=len(text)<=60 and len(text.split())<=7 and not text.rstrip().endswith(('!','?','.',':'))
+    """A section title rather than a message: short words, not a sentence, question, exclamation or fragment."""
+    letters=sum(c.isalpha() for c in text)
+    return (2<=len(text)<=60 and len(text.split())<=7 and letters>=3 and not text.startswith(('(','[','{'))
+            and not text.rstrip().endswith(('!','?','.',':',')')))
 
 def links(src,paths,labels):
-    """Pages the CRM links to (sidebar, routerLink, router.navigate, path constants) and the human text
-    of any object that names a page's path, such as a settings card's label and description."""
-    linked={p for p in paths if p in labels};extra={p:[] for p in paths}
+    """Pages the CRM links to (sidebar, routerLink, router.navigate, path constants), the human text
+    of any object that names a page's path (such as a settings card's label and description), and the
+    storage keys each page is handed by the code that links to it."""
+    linked={p for p in paths if p in labels};extra={p:[] for p in paths};handed={p:set() for p in paths}
     by_segment={}
     for path in paths:by_segment.setdefault(path.split('/')[-1],[]).append(path)
     files=list(src.files.items())+[(f,f.read_text('utf8',errors='ignore')) for f in src.app.rglob('*.html')]
@@ -199,12 +222,15 @@ def links(src,paths,labels):
             if literal in extra:return literal
             match=by_segment.get(literal) if '/' not in literal else None
             return match[0] if match and len(match)==1 else None
+        targets=set()
         for nav in re.findall(r'navigate(?:ByUrl)?\(\s*\[([^\]]*)\]',code):
             page=resolve('/'.join(re.findall(r"['\"]([^'\"]+)['\"]",nav)))
-            if page:linked.add(page)
+            if page:linked.add(page);targets.add(page)
         for literal in re.findall(r"['\"`](/?[\w-]+(?:/[\w-]+)*)['\"`]",code):
             page=resolve(literal)
-            if page and (('/' in literal.strip('/')) or 'routerLink' in code):linked.add(page)
+            if page and (('/' in literal.strip('/')) or 'routerLink' in code):linked.add(page);targets.add(page)
+        written=set(re.findall(r"(?:local|session)Storage\.setItem\(\s*['\"]([^'\"]+)['\"]",code))
+        for page in targets:handed[page]|=written
         for obj in re.finditer(r"\{[^{}]*?['\"]/?([\w-]+/[\w-]+(?:/[\w-]+)*)['\"][^{}]*\}",code):
             page=obj.group(1).strip('/')
             if page not in extra:continue
@@ -212,7 +238,7 @@ def links(src,paths,labels):
                 value=src.translate(value) or value if re.fullmatch(r'[A-Z_]+\.[\w.-]+',value) else value
                 if value.strip('/')!=page and (' ' in value or any(c.isupper() for c in value)) and not re.fullmatch(r'[A-Z_]+\.[\w.-]+',value):
                     extra[page].append(value)
-    return linked,extra
+    return linked,extra,handed
 
 def humanise(segment):
     return ' '.join(w.capitalize() for w in re.split(r'[-_]',segment) if w)
@@ -231,17 +257,44 @@ def build(root):
         texts=src.texts(src.templates.get(component,Path('-')))
         headings=list(dict.fromkeys(t for k,t in texts if k=='heading'))
         words=list(dict.fromkeys(t for _,t in texts))
-        pages[path]={'path':'/'+path,'name':name,'headings':headings[:40],'context':words[:60]}
-    linked,extra=links(src,set(pages),labels)
+        # A page whose component reads state left by the page that opened it (a selected card or record)
+        # cannot be shown by opening its address directly.
+        file=src.classes.get(component);code=src.files.get(file,'')
+        # Lists the page renders from shared constants (e.g. the cards it shows) are part of what it shows.
+        listed=src.constant_labels(file) if file else []
+        pages[path]={'path':'/'+path,'name':name,'headings':headings[:40],'context':words[:60]+listed[:40],'listed':listed[:40],
+            'reads':set(re.findall(r"(?:local|session)Storage\.getItem\(\s*['\"]([^'\"]+)['\"]",code)),
+            'navigation_state':bool(re.search(r'history\.state|getCurrentNavigation',code))}
+    linked,extra,handed=links(src,set(pages),labels)
+    for key,page in pages.items():
+        # It needs context when it reads what the page linking to it stored just before opening it.
+        page['needs_context']=page['navigation_state'] or bool(page['reads']&handed[key])
     entries=[]
     for key,page in pages.items():
         described=list(dict.fromkeys(extra[key]))
-        common={'path':page['path'],'page':page['name'],'reachable':key in linked}
+        context=[t for t in described+page['context'] if sum(c.isalpha() for c in t)>=3]
+        # A layout shell (only an outlet for its child pages) has nothing of its own to show.
+        if not context and not page['headings']:continue
+        common={'path':page['path'],'page':page['name'],
+                'reachable':key in labels or (key in linked and not page['needs_context'])}
         entries.append({'id':'p'+str(len(entries)),**common,'section':None,
-                        'text':page['name']+': '+', '.join(described+page['context'][:40])})
+                        'text':page['name']+': '+', '.join(context[:45])})
         for heading in page['headings']:
             if heading.casefold()==page['name'].split(' › ')[-1].casefold():continue
             entries.append({'id':'p'+str(len(entries)),**common,'section':heading,'text':page['name']+' › '+heading})
+        # Items the page renders from a list (cards, tiles, options) can be pointed at by their visible name.
+        for item in page['listed']:
+            if is_title(item) and item not in page['headings']:
+                entries.append({'id':'p'+str(len(entries)),**common,'section':item,'text':page['name']+' › '+item})
+    # A module whose own address redirects to one of its pages gets a landing entry that names all of its
+    # pages, so "show me all reports" finds the module rather than one arbitrary report.
+    for prefix,target in src.landings.items():
+        if prefix in pages or target not in pages:continue
+        children=[pages[k]['name'].split(' › ',1)[-1] for k in pages if k.startswith(prefix+'/')]
+        name=labels.get(prefix) or humanise(prefix.split('/')[-1])
+        entries.append({'id':'p'+str(len(entries)),'path':'/'+target,'page':name,'section':None,
+                        'reachable':labels.get(prefix) is not None or target in linked,
+                        'text':name+': '+', '.join(dict.fromkeys(children))})
     return {'source':'Angular routes, sidebar and templates of the CRM web client','pages':len(pages),'entries':entries}
 
 if __name__=='__main__':

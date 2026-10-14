@@ -9,6 +9,8 @@
 .suggestions button { min-height: 40px; font-size: 12px; }
 #send { width: 44px; height: 44px; }
 textarea { font-size: 14px; }
+#message:focus-visible { outline: none; }
+#composer:focus-within { border-color: var(--teal); }
 @media(min-width:561px) and (max-width:680px) {
   main { grid-template-rows: 360px minmax(470px,1fr); }
   #screen-empty { max-width: 460px; }
@@ -68,3 +70,26 @@ form { gap: 6px; }
 #steps li.step-blocked span { color: #a4482f; font-weight: 600; }
 
 .speech-setting { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #526962; padding: 4px 0; }
+/* Initial details are a form, not a repeated conversation or an inferred identity. */
+.visitor-form { display:block; margin: 0 22px 12px; padding: 14px; border: 1px solid #cbdacf; border-radius: 12px; overflow-y: auto; flex-shrink: 0; max-height: 58vh; }
+.visitor-form[hidden] { display: none; }
+.visitor-form h3 { margin: 0 0 8px; }
+.visitor-form p { font-size: 13px; line-height: 1.4; }
+.visitor-form label { display: block; margin: 8px 0; font-size: 13px; }
+.visitor-form input { display:block; box-sizing:border-box; width:100%; padding:9px; border:1px solid #cbdacf; border-radius:6px; }
+.visitor-form .primary { width:100%; margin-top:10px; }
+.visitor-form .iti { width:100%; }
+.visitor-form small { display:block; margin-top:6px; font-size:12px; line-height:1.4; color:var(--muted); }
+.visitor-form .field-error { color:#a23721; }
+.visitor-form input[aria-invalid="true"] { border-color:#a23721; }
+.iti { --iti-font-size:14px; --iti-spacer-horizontal:9px; }
+.iti__dropdown-content { color:#183f39; }
+.quick-replies { margin-bottom: 10px; max-height: 190px; overflow-y: auto; }
+.quick-replies[hidden] { display: none; }
+.quick-replies p { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.quick-reply-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.quick-reply-options button { min-height: 40px; padding: 8px 12px; border: 1px solid #b6cfc2; border-radius: 18px; background: #f0f6f1; color: #185b4c; font: inherit; font-size: 13px; cursor: pointer; }
+.quick-reply-options button:hover { background: #dcece1; }
+.quick-reply-options button:focus-visible { outline: 2px solid #185b4c; outline-offset: 2px; }
+.quick-reply-options .quick-reply-secondary { background: transparent; border-color: #d7ded8; }
+.quick-reply-options button:disabled { opacity: .5; cursor: default; }

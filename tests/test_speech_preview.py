@@ -8,7 +8,7 @@ def test_speech_preview_and_optional_auto_send():
    browser=await pw.chromium.launch(channel='chrome',headless=True)
    page=await browser.new_page();sent=[]
    await page.add_init_script('''localStorage.setItem('beacon.voice','off');
-    navigator.mediaDevices.getUserMedia=async()=>({getTracks:()=>[{stop(){}}]});
+    navigator.mediaDevices.getUserMedia=async constraints=>{window.micConstraints=constraints;return {getTracks:()=>[{stop(){}}]};};
     window.MediaRecorder=class {static isTypeSupported(){return true;}start(){this.state='recording';}stop(){this.state='inactive';this.onstop?.();}};
     window.WebSocket=class {static OPEN=1;constructor(url,protocols){window.rec=this;this.readyState=1;this.protocols=protocols;setTimeout(()=>this.onopen?.(),0);}send(){}close(){this.readyState=3;} };
     window.SpeechRecognition=class {constructor(){throw new Error('Browser recognition must not be used');}};''')
@@ -28,6 +28,9 @@ def test_speech_preview_and_optional_auto_send():
    await page.goto('http://localhost:9876/widget.html')
    await page.locator('#mic').click()
    await page.wait_for_function('window.rec')
+   constraints=await page.evaluate('window.micConstraints.audio')
+   assert constraints['noiseSuppression'] and constraints['echoCancellation']
+   assert constraints['autoGainControl'] is False and constraints['channelCount']==1
    async def say(text):
     await page.evaluate('text=>window.rec.onmessage({data:JSON.stringify({tokens:[{text,is_final:true},{text:"<end>",is_final:true}]})})',text)
    await say('twenty thousand')

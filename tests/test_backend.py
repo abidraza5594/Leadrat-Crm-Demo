@@ -221,6 +221,17 @@ def test_streaming_speech_ownership_headers_and_provider_failure(client,monkeypa
     client.delete(path,headers=h)
 
 
+def test_noise_filter_assets_are_local_and_allowlisted(client):
+    response=client.get('/vendor/noise-suppressor/rnnoise.wasm')
+    assert response.status_code==200 and response.content.startswith(b'\x00asm')
+    assert response.headers['content-type']=='application/wasm'
+    assert "'wasm-unsafe-eval'" in response.headers['content-security-policy']
+    assert "'unsafe-eval'" not in response.headers['content-security-policy']
+    assert client.get('/microphone-filter.js').status_code==200
+    assert client.get('/vendor/noise-suppressor/rnnoise/workletProcessor.js').status_code==200
+    assert client.get('/vendor/noise-suppressor/package.json').status_code==404
+
+
 def test_transient_auth_miss_does_not_flip_status():
     class Flaky(Worker):
         answers=[None,False,False]

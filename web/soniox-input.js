@@ -7,16 +7,19 @@
     }
     async start(language='en') {
       this.abort();const generation=this.generation;this.onState('connecting');
+      const filter=this.filter=window.BeaconMicrophoneFilter?.create();
       try {
-        const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+        const supported=navigator.mediaDevices.getSupportedConstraints?.() || {};
+        const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,
+          autoGainControl:false,channelCount:1,...(supported.voiceIsolation?{voiceIsolation:true}:{})}});
         if(generation!==this.generation){stream.getTracks().forEach(t=>t.stop());return;}
         this.stream=stream;
-        const config=await this.getKey();
+        const [cleanStream,config]=await Promise.all([filter?filter.process(stream):stream,this.getKey()]);
         if(generation!==this.generation)return;
         const socket=this.socket=new WebSocket(config.url,['soniox-api-key',config.api_key]);
         const mime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
         if(!mime)throw new Error('This browser cannot record a supported audio format. Please type your question.');
-        const recorder=this.recorder=new MediaRecorder(stream,{mimeType:mime});
+        const recorder=this.recorder=new MediaRecorder(cleanStream,{mimeType:mime});
         this.final='';
         const fail=message=>{if(generation!==this.generation)return;this.abort();this.onError(message);};
         this.connectTimer=setTimeout(()=>fail('Speech connection timed out. Tap the microphone to retry.'),10000);
@@ -34,7 +37,7 @@
             socket.send(e.data);
           }
         };
-        recorder.onstop=()=>{stream.getTracks().forEach(t=>t.stop());if(socket.readyState===WebSocket.OPEN)socket.send('');};
+        recorder.onstop=()=>{stream.getTracks().forEach(t=>t.stop());filter?.close();if(socket.readyState===WebSocket.OPEN)socket.send('');};
         socket.onmessage=e=>{
           if(generation!==this.generation)return;
           let data;try{data=JSON.parse(e.data);}catch{fail('Invalid speech response. Please try again.');return;}
@@ -66,6 +69,7 @@
       this.generation++;clearTimeout(this.connectTimer);clearTimeout(this.maxTimer);clearTimeout(this.closeTimer);
       if(this.recorder){this.recorder.onstop=null;this.recorder.ondataavailable=null;if(this.recorder.state==='recording')this.recorder.stop();}
       this.stream?.getTracks().forEach(t=>t.stop());
+      this.filter?.close();this.filter=null;
       if(this.socket){this.socket.onclose=null;this.socket.onerror=null;this.socket.onmessage=null;this.socket.close();}
       this.stream=this.socket=this.recorder=null;this.final='';this.onState('off');
     }

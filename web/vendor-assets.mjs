@@ -8,3 +8,9 @@ for (const file of ['dist/js/intlTelInput.min.js','dist/js/utils.js','dist/css/i
   await copyFile(path.join(root,'node_modules/intl-tel-input',file),target);
 }
 console.log('Copied pinned intl-tel-input browser assets.');
+for (const file of ['dist/index.js','dist/rnnoise/workletProcessor.js','dist/rnnoise.wasm','dist/rnnoise_simd.wasm','LICENSE']) {
+  const target=path.join(root,'vendor/noise-suppressor',file.replace(/^dist\//,''));
+  await mkdir(path.dirname(target),{recursive:true});
+  await copyFile(path.join(root,'node_modules/@sapphi-red/web-noise-suppressor',file),target);
+}
+console.log('Copied pinned RNNoise microphone assets.');

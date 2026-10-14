@@ -237,7 +237,7 @@ async def security(request:Request,call_next):
     response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
-    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss://stt-rt.soniox.com; frame-ancestors "+' '.join(sorted(config.ORIGINS))+';'
+    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss://stt-rt.soniox.com; frame-ancestors "+' '.join(sorted(config.ORIGINS))+';'
     return response
 
 class Create(BaseModel):
@@ -884,9 +884,16 @@ async def phone_assets(filename:str):
     if not path.is_file():raise HTTPException(404)
     return FileResponse(path)
 
+@app.get('/vendor/noise-suppressor/{filename:path}')
+async def noise_assets(filename:str):
+    if filename not in {'index.js','rnnoise/workletProcessor.js','rnnoise.wasm','rnnoise_simd.wasm'}:raise HTTPException(404)
+    path=config.ROOT/'web/vendor/noise-suppressor'/filename
+    if not path.is_file():raise HTTPException(404)
+    return FileResponse(path,media_type='application/wasm' if filename.endswith('.wasm') else 'text/javascript')
+
 @app.get('/{filename}')
 async def static(filename:str):
-    if filename not in {'index.html','widget.html','widget.js','widget.css','widget-client.js','soniox-input.js','visitor-phone.js','index.css','index.js'}:raise HTTPException(404)
+    if filename not in {'index.html','widget.html','widget.js','widget.css','widget-client.js','soniox-input.js','microphone-filter.js','visitor-phone.js','index.css','index.js'}:raise HTTPException(404)
     path=config.ROOT/'web'/filename
     if not path.is_file():raise HTTPException(404)
     return FileResponse(path)

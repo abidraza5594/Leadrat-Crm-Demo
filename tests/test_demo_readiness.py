@@ -10,19 +10,19 @@ def test_password_help_is_not_a_lockout_error():
     assert LOGIN_BLOCKED.search('Your account has been locked')
     assert LOGIN_BLOCKED.search('You must reset your password')
 
-class Locator:
-    def __init__(self,visible):self.visible=visible
-    async def count(self):return len(self.visible)
-    def nth(self,i):return Locator([self.visible[i]])
-    async def is_visible(self):return self.visible[0]
-
-class Page:
-    url='https://crm.example.com/'
-    def __init__(self,nav,password):self.nav,self.password=nav,password
-    def is_closed(self):return False
-    def locator(self,selector):return Locator(self.nav if selector==NAV else self.password)
-
-@pytest.mark.parametrize('nav,password,expected',[([False],[],False),([True],[True],False),([False,True],[False],True)])
-def test_auth_requires_visible_workspace_without_login_form(nav,password,expected):
-    worker=BrowserWorker();worker.page=Page(nav,password)
-    assert asyncio.run(worker.authenticated()) is expected
+def test_auth_requires_visible_workspace_without_login_form():
+    from playwright.async_api import async_playwright
+    hidden={'nav':'display:none','password':'visibility:hidden'}
+    cases=[([False],[],False),([True],[True],False),([False,True],[False],True),([],[],False)]
+    async def run():
+        async with async_playwright() as pw:
+            browser=await pw.chromium.launch(channel='chrome',headless=True)
+            page=await browser.new_page();worker=BrowserWorker();worker.page=page
+            results=[]
+            for nav,password,_ in cases:
+                await page.set_content(''.join('<a class="nav-item" style="'+('' if v else hidden['nav'])+'">Leads</a>' for v in nav)
+                    +''.join('<input type="password" style="'+('' if v else hidden['password'])+'">' for v in password))
+                results.append(await worker.authenticated())
+            await browser.close()
+            return results
+    assert asyncio.run(run())==[expected for *_,expected in cases]

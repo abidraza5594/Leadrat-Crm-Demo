@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,7 +23,7 @@ from .conversation_store import ConversationStore
 from .semantic_knowledge import SemanticKnowledge
 from .screens import Screens
 from .qualification import Facts, qualify
-from .voice import VoiceCache
+from .voice import VoiceCache, warm_phrases
 from .lead_browser import walkthrough
 from .qualify import EMAIL, PHONE, EXCLUDED_KINDS, qualify_session, rules_extract, transcript_of
 from . import handoff as handoffs
@@ -36,6 +38,7 @@ READ_ONLY=("I can't do that here. Only the confirmed Add Lead flow can save a ne
 ACKS={'question':'Let me check that for you.','action':'Sure, one moment.'}
 VOICE_ACK=os.getenv('BEACON_VOICE_ACK','0')=='1'
 ACK_AFTER=float(os.getenv('ACK_AFTER_MS','2500'))/1000
+WELCOME='Welcome to Beacon! I can answer your questions about Leadrat and show you how it works. What would you like to explore?'
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
 ABANDONED_AFTER=120
@@ -131,7 +134,7 @@ class Session:
         if self.timings and kind is None and 'answer_reply_ms' not in self.timings[-1]:
             self.timings[-1]['answer_reply_ms']=round((time.monotonic()-self.turn_started)*1000)
         if self.timings and 'first_reply_ms' not in self.timings[-1]:
-            self.timings[-1].update(first_reply_ms=round((time.monotonic()-self.turn_started)*1000),first_message_id=message_id,first_part_hash=__import__('hashlib').sha256(parts[0][:3000].encode()).hexdigest())
+            self.timings[-1].update(first_reply_ms=round((time.monotonic()-self.turn_started)*1000),first_message_id=message_id,first_part_hash=hashlib.sha256(parts[0][:3000].encode()).hexdigest())
         if self.voice_enabled:
             for part in parts:self.voice_cache.prepare(part)
         self.messages=self.messages[-80:]
@@ -158,6 +161,7 @@ sessions:dict[str,Session]={}
 create_lock=asyncio.Lock()
 background:set[asyncio.Task]=set()
 registration_jobs:set[asyncio.Task]=set()
+teardowns:set[asyncio.Task]=set()
 browser_pool=WarmBrowser()
 conversation_store=None
 knowledge=SemanticKnowledge(project=PROJECT['id'],directory=PROJECT['knowledge_dir'])
@@ -176,10 +180,15 @@ async def close(s):
         if task and not task.done():
             task.cancel()
             with suppress(asyncio.CancelledError):await task
-    with suppress(Exception):await s.worker.close()
     s.voice_cache.close()
     s.messages.clear();s.steps.clear();sessions.pop(s.id,None)
+    # The next visitor's browser starts preparing now. Saving this one's login and shutting Chrome
+    # down takes seconds; the visitor closing the demo does not wait for it.
     if not sessions:browser_pool.prime()
+    worker=s.worker
+    async def shut_down():
+        with suppress(Exception):await worker.close()
+    task=asyncio.create_task(shut_down());teardowns.add(task);task.add_done_callback(teardowns.discard)
 
 async def cleanup():
     while True:
@@ -209,6 +218,8 @@ async def lifespan(app):
         except Exception as exc:print('Semantic knowledge preparation failed:',type(exc).__name__,flush=True)
     # Loading the search model takes ~9 s; do it at start-up, not during the first visitor question.
     if os.getenv('BEACON_WARM_KNOWLEDGE','1')=='1':tasks.append(asyncio.create_task(warm_search()))
+    # The welcome and follow-up questions then play without waiting for speech synthesis.
+    if os.getenv('BEACON_WARM_VOICE','1')=='1':tasks.append(asyncio.create_task(warm_phrases(fixed_phrases())))
     if config.PROVIDER=='local' and __import__('os').getenv('BEACON_START_LOCAL_MODEL')=='1':
         async def start_model():
             from slm.local_runtime import ensure_local_model
@@ -231,6 +242,7 @@ async def lifespan(app):
     for task in tasks:
         with suppress(BaseException):await task
     for s in list(sessions.values()):await close(s)
+    if teardowns:await asyncio.wait(list(teardowns),timeout=10)
     if registration_jobs:
         _,pending=await asyncio.wait(list(registration_jobs),timeout=30)
         for task in pending:task.cancel()
@@ -385,7 +397,7 @@ async def create(body:Create,request:Request):
         s=Session(voice_enabled=body.voice,client_id=request.headers.get('x-beacon-client','')[:80]);sessions[s.id]=s
         # The local model unloads after 30 idle minutes; reload it while the browser boots.
         spawn(warm_up())
-        s.say('Welcome to Beacon! I can answer your questions about Leadrat and show you how it works. What would you like to explore?')
+        s.say(WELCOME)
         s.boot=asyncio.create_task(boot(s))
         # A prepared browser can be handed over immediately, without a starting-state poll.
         if browser_pool.ready():
@@ -406,7 +418,14 @@ async def state(id:str,request:Request):
         async def refresh():
             with suppress(Exception):await refresh_status(s)
         s.refresh_task=asyncio.create_task(refresh())
-    return s.snapshot()
+    body=json.dumps(jsonable_encoder(s.snapshot()),ensure_ascii=False,separators=(',',':')).encode()
+    return conditional(request,body,'application/json')
+
+def conditional(request,body,media_type):
+    """Polls repeat several times a second; what the widget already has is answered with 304 and no body."""
+    tag='"'+hashlib.blake2b(body,digest_size=12).hexdigest()+'"'
+    if request.headers.get('if-none-match')==tag:return Response(status_code=304,headers={'ETag':tag})
+    return Response(body,media_type=media_type,headers={'ETag':tag})
 
 @app.get('/api/sessions/{id}/screen')
 async def screen(id:str,request:Request):
@@ -414,7 +433,7 @@ async def screen(id:str,request:Request):
     if s.status!='ready':return Response(status_code=204)
     try:
         frame=await s.worker.screenshot()
-        return Response(frame,media_type='image/jpeg') if frame else Response(status_code=204)
+        return conditional(request,frame,'image/jpeg') if frame else Response(status_code=204)
     except Exception:return Response(status_code=204)
 
 def conversation_context(s,message):
@@ -468,7 +487,12 @@ async def execute(s,message):
             f=FEATURES[d.feature]
             step={'title':f['title'],'status':'running','detail':'Opening the requested CRM screen.'};s.steps.append(step)
             demo=(step,asyncio.create_task(recovery.read_action(s,lambda:s.worker.open_module(f))))
-        outcome=await engine.decide(on_decision=on_decision,**conversation_context(s,message))
+        def on_draft(text):
+            # Synthesise the opening of a drafted answer while it is checked against its sources.
+            # Only a checked answer is said, but by then its first audio is already prepared.
+            if s.voice_enabled:
+                for part in speech_parts(text)[:2]:s.voice_cache.prepare(part)
+        outcome=await engine.decide(on_decision=on_decision,on_draft=on_draft,**conversation_context(s,message))
         d=Decision.model_validate(outcome['decision']);s.last_decision=d.model_dump()
         if s.messages and s.messages[-1]['role']=='user' and s.messages[-1]['text']==message:
             s.messages[-1]['kind']='customer_answer' if d.kind=='customer' else 'product_question' if d.kind=='product' else 'unverified_input'
@@ -624,7 +648,7 @@ async def turn(id:str,body:Turn,request:Request):
         raise HTTPException(428,'Please complete the details form before starting the conversation.')
     message=body.message.strip()
     if not message:raise HTTPException(422,'Enter a question')
-    message_hash=__import__('hashlib').sha256(message.encode()).hexdigest()
+    message_hash=hashlib.sha256(message.encode()).hexdigest()
     if body.request_id in s.accepted_turns:
         if s.accepted_turns[body.request_id]!=message_hash:raise HTTPException(409,detail={'code':'request_conflict','message':'Request ID was already used for a different question'})
         return {'accepted':True,'duplicate':True}
@@ -665,8 +689,10 @@ async def stop(id:str,request:Request):
     if s.task and not s.task.done():
         s.task.cancel()
         with suppress(asyncio.CancelledError):await s.task
-        s.say('The demonstration has stopped.')
+        s.say(STOPPED)
     return {'status':'stopped'}
+
+STOPPED='The demonstration has stopped.'
 
 @app.delete('/api/sessions/{id}',status_code=204)
 async def end(id:str,request:Request):
@@ -835,11 +861,24 @@ def follow_up(s):
     options=NEXT_STEPS.get(s.last_feature,[])+DEFAULT_STEPS
     nxt=next((o for o in options if o in FEATURES and o!=s.last_feature and o not in s.shown),None)
     if not nxt:
-        s.say('What else would you like to see?');return
-    title=FEATURES[nxt]['title']
-    what='how to '+title[0].lower()+title[1:] if title.split()[0] in {'Add','Change','Schedule','Reassign','Edit','Find','Export','Complete','Manage'} else 'the '+title
+        s.say(NOTHING_NEXT);return
     s.offer=nxt
-    s.say(f'Shall I show you {what} next? Or ask me about anything else.')
+    s.say(offer_text(nxt))
+
+NOTHING_NEXT='What else would you like to see?'
+def offer_text(feature):
+    title=FEATURES[feature]['title']
+    what='how to '+title[0].lower()+title[1:] if title.split()[0] in {'Add','Change','Schedule','Reassign','Edit','Find','Export','Complete','Manage'} else 'the '+title
+    return f'Shall I show you {what} next? Or ask me about anything else.'
+
+def fixed_phrases():
+    """Every sentence Beacon says word for word, split the way it is spoken (see speech_parts)."""
+    offered={o for steps in NEXT_STEPS.values() for o in steps}|set(DEFAULT_STEPS)
+    texts=[WELCOME,NOTHING_NEXT,SAVED_CONTACT,CONTACT_QUESTION,STOPPED,
+           *(question for _,question in DISCOVERY),*('And to continue: '+question for _,question in DISCOVERY),
+           *(offer_text(f) for f in sorted(offered) if f in FEATURES),
+           *('The '+f['title']+' is open.' for f in FEATURES.values() if f['workspace'])]
+    return [part for text in texts for part in speech_parts(text)]
 
 def discover(s):
     if s.opted_out or s.pending_discovery:return
@@ -852,7 +891,9 @@ def discover(s):
     if not q.get('consent') and 'consent' not in s.discovery_asked:
         s.discovery_asked.append('consent')
         s.pending_discovery='consent'
-        s.say('Would you like someone from Leadrat to contact you? If yes, share an email or phone number.')
+        s.say(CONTACT_QUESTION)
+
+CONTACT_QUESTION='Would you like someone from Leadrat to contact you? If yes, share an email or phone number.'
 
 def accepted_qualification(s,result):
     # The trained extractor cannot overwrite the visitor's accepted corrections

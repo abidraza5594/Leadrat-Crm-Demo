@@ -63,19 +63,20 @@ def prune():
 
 async def deliver(payload, attempts=3, backoff=1.0):
     """Outbox first, then POST with retries. Returns the final delivery_status."""
-    prune()
-    _append('outbox.jsonl', {**payload, '_stored': time.time()})
+    # File work runs off the event loop: the outbox grows, and polls and frames must not wait for it.
+    await asyncio.to_thread(prune)
+    await asyncio.to_thread(_append, 'outbox.jsonl', {**payload, '_stored': time.time()})
     for attempt in range(1, attempts + 1):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.post(WEBHOOK, json=payload, headers={'Idempotency-Key': payload['handoff_id']})
                 if r.status_code < 300:
-                    _append('outbox.jsonl', {'handoff_id': payload['handoff_id'], 'delivery_status': 'delivered', 'attempt': attempt, 'at': now(), '_stored': time.time()})
+                    await asyncio.to_thread(_append, 'outbox.jsonl', {'handoff_id': payload['handoff_id'], 'delivery_status': 'delivered', 'attempt': attempt, 'at': now(), '_stored': time.time()})
                     return 'delivered'
         except httpx.HTTPError:
             pass
         if attempt < attempts: await asyncio.sleep(backoff * 2 ** (attempt - 1))
-    _append('outbox.jsonl', {'handoff_id': payload['handoff_id'], 'delivery_status': 'failed', 'attempt': attempts, 'at': now(), '_stored': time.time()})
+    await asyncio.to_thread(_append, 'outbox.jsonl', {'handoff_id': payload['handoff_id'], 'delivery_status': 'failed', 'attempt': attempts, 'at': now(), '_stored': time.time()})
     return 'failed'
 
 def receive(payload):

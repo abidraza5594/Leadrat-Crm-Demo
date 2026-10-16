@@ -6,7 +6,8 @@ shared = None
 
 async def start():
     global shared
-    shared = httpx.AsyncClient(limits=httpx.Limits(max_connections=20, max_keepalive_connections=10))
+    # Visitors pause between questions; keep the model connection open across those pauses.
+    shared = httpx.AsyncClient(limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=90))
 
 async def close():
     global shared

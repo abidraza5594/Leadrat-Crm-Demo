@@ -1,17 +1,62 @@
 """Bounded in-memory speech cache; concurrent callers share synthesis."""
 import asyncio
 import hashlib
+import os
 import time
 from collections import OrderedDict
 import httpx
 from . import config
+
+EDGE_VOICE='en-IN-NeerjaNeural'
+EDGE_RATE='+12%'
+# Beacon's fixed sentences (welcome, follow-up questions) are synthesised once and kept, in memory and
+# in .state/voice, so they play without a synthesis wait. Answers to a visitor are never written to disk.
+PHRASES:dict[str,bytes]={}
+PHRASE_DIR=config.ROOT/'.state'/'voice'
+
+def text_key(text):
+    return hashlib.sha256(text[:3000].encode()).hexdigest()
+
+async def edge_audio(text,on_chunk=None):
+    import edge_tts
+    chunks=[]
+    async for chunk in edge_tts.Communicate(text,EDGE_VOICE,rate=EDGE_RATE).stream():
+        if chunk['type']=='audio':
+            chunks.append(chunk['data'])
+            if on_chunk:on_chunk(chunk['data'])
+    return b''.join(chunks)
+
+async def warm_phrases(texts):
+    """Load fixed phrases from disk, synthesising only the missing ones. Failures are left for later."""
+    if config.TTS_PROVIDER!='edge':return
+    limit=asyncio.Semaphore(3)
+    async def one(text):
+        key=text_key(text)
+        if key in PHRASES:return
+        path=PHRASE_DIR/(hashlib.sha256((EDGE_VOICE+EDGE_RATE+text).encode()).hexdigest()+'.mp3')
+        try:
+            PHRASES[key]=await asyncio.to_thread(path.read_bytes);return
+        except OSError:pass
+        async with limit:
+            try:
+                async with asyncio.timeout(22):audio=await edge_audio(text)
+            except Exception:return
+        if not audio:return
+        PHRASES[key]=audio
+        def write():
+            PHRASE_DIR.mkdir(parents=True,exist_ok=True)
+            temporary=path.with_suffix('.tmp');temporary.write_bytes(audio);os.replace(temporary,path)
+        try:await asyncio.to_thread(write)
+        except OSError:pass
+    await asyncio.gather(*(one(text) for text in dict.fromkeys(texts) if text))
 
 class VoiceCache:
     def __init__(self):
         self.reference=None
         self.tasks=OrderedDict()
         self.streams={}
-        self.limit=asyncio.Semaphore(2)
+        # The first part of an answer, the next part and the follow-up question synthesise together.
+        self.limit=asyncio.Semaphore(3)
         # text hash -> synthesis milliseconds (latency measurement only; no text is stored).
         self.timings={}
 
@@ -25,7 +70,7 @@ class VoiceCache:
         self.streams[key]=entry
         async def produce():
             try:
-                audio=await self.synthesize(text)
+                audio=PHRASES.get(key) or await self.synthesize(text)
                 if not entry['chunks']:entry['chunks'].append(audio)
                 return audio
             except BaseException as exc:
@@ -74,16 +119,12 @@ class VoiceCache:
                     from .soniox import synthesize
                     audio=await synthesize(text,self.reference)
                 elif config.TTS_PROVIDER=='edge':
-                    import edge_tts
-                    chunks=[]
                     entry=self.streams.get(hashlib.sha256(text.encode()).hexdigest())
-                    async for chunk in edge_tts.Communicate(text,'en-IN-NeerjaNeural',rate='+12%').stream():
-                        if chunk['type']=='audio':
-                            chunks.append(chunk['data'])
-                            if entry is not None:
-                                entry['chunks'].append(chunk['data'])
-                                entry['changed'].set()
-                    audio=b''.join(chunks)
+                    def forward(data):
+                        if entry is not None:
+                            entry['chunks'].append(data)
+                            entry['changed'].set()
+                    audio=await edge_audio(text,forward)
                 elif config.TTS_URL:
                     async with httpx.AsyncClient(timeout=10) as client:
                         result=await client.post(config.TTS_URL+'/audio/speech',json={'model':'kokoro','voice':config.TTS_VOICE,'input':text,'response_format':'mp3'})

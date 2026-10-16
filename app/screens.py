@@ -28,6 +28,12 @@ def grams(text):
     text=' '+' '.join(re.findall(r'[a-z0-9]+',text.lower()))+' '
     return {text[i:i+3] for i in range(len(text)-2)}
 
+def postings(pairs,array=False):
+    """An inverted index: key -> the values listed with it, in first-seen order."""
+    index={}
+    for key,value in pairs:index.setdefault(key,[]).append(value)
+    return {k:np.array(v,dtype=np.intp) for k,v in index.items()} if array else index
+
 class Screens:
     def __init__(self,path=MAP):
         self.entries=[];self.vectors=None;self.lock=asyncio.Lock()
@@ -53,6 +59,15 @@ class Screens:
         from collections import Counter
         df=Counter(w for ws in self.words for w in ws);n=max(1,len(self.words))
         self.rarity={w:float(np.log(1+n/c)) for w,c in df.items()}
+        # Inverted indexes, so a message is scored by touching only what it shares with the map:
+        # trigram -> CRM words (spelling matches), word -> locations, name trigram -> locations.
+        self.order={w:i for i,w in enumerate(self.vocabulary)}
+        self.gram_words=postings((g,w) for w,gs in self.vocabulary.items() for g in gs)
+        self.word_places={id(sets):postings(((w,i) for i,ws in enumerate(sets) for w in ws),array=True)
+                          for sets in (self.words,self.namewords)}
+        self.name_grams=postings(((g,i) for i,gs in enumerate(self.names) for g in gs),array=True)
+        self.name_sizes=np.array([len(gs) for gs in self.names],dtype=float)
+        self._matches={}
 
     def include(self,features):
         """Add the project's prepared walkthroughs as options next to the generated pages."""
@@ -79,9 +94,9 @@ class Screens:
         """Per location: meaning (embedding similarity), the message's words in its name, and on it."""
         if query not in self._signals:
             vector=await asyncio.to_thread(encoder.encode,query,normalize_embeddings=True,show_progress_bar=False)
-            similar=self.similar(query);asked=grams(query)
+            similar=self.similar(query)
             # Character overlap with the location's name survives heavy misspelling ("salse copilt").
-            spelling=np.array([len(asked&n)/len(n) if n else 0.0 for n in self.names])
+            spelling=self.spelling(grams(query))
             self._signals[query]=(self.vectors@vector,self.word_match(similar,self.namewords),self.word_match(similar,self.words),spelling)
             if len(self._signals)>256:self._signals.pop(next(iter(self._signals)))
         return self._signals[query]
@@ -128,13 +143,33 @@ class Screens:
         return chosen
 
     def matches(self,word):
-        """Words shown somewhere in the CRM that this word means, allowing misspelling and joined words."""
-        g=grams(word);match={}
-        for v,vg in self.vocabulary.items():
-            score=len(g&vg)/len(g|vg)
+        """Words shown somewhere in the CRM that this word means, allowing misspelling and joined words.
+
+        Only CRM words sharing a trigram with the word can score (a substring of four or more letters
+        shares its inner trigrams), so the trigram index visits those instead of the whole vocabulary.
+        Jaccard similarity follows from the shared count: |a&b|/(|a|+|b|-|a&b|)."""
+        cached=self._matches.get(word)
+        if cached is not None:return cached
+        g=grams(word);shared={}
+        for gram in g:
+            for v in self.gram_words.get(gram,()):shared[v]=shared.get(v,0)+1
+        found=[]
+        for v,common in shared.items():
+            score=common/(len(g)+len(self.vocabulary[v])-common)
             if len(v)>=4 and (v in word or word in v):score=max(score,0.8)
-            if score>=0.55:match[v]=score
+            if score>=0.55:found.append((self.order[v],v,score))
+        match={v:score for _,v,score in sorted(found)}
+        if len(self._matches)>4096:self._matches.pop(next(iter(self._matches)))
+        self._matches[word]=match
         return match
+
+    def spelling(self,asked):
+        """Per location, the share of its name's trigrams that the message contains."""
+        counts=np.zeros(len(self.names))
+        for gram in asked:
+            places=self.name_grams.get(gram)
+            if places is not None:counts[places]+=1
+        return np.divide(counts,self.name_sizes,out=np.zeros_like(counts),where=self.name_sizes>0)
 
     def distinctive(self,text):
         """Does the message name something shown in the CRM? A bare follow-up ("isme kya hota hai") does not."""
@@ -152,8 +187,19 @@ class Screens:
         # A word's weight is the rarity of the CRM word it most closely is, not of its rarest look-alike.
         weights=[self.rarity.get(max(match,key=lambda v:(match[v],-self.rarity.get(v,0.0))),0.0) for match in similar]
         total=sum(weights) or 1.0
-        return np.array([sum(w*max((s for v,s in match.items() if v in ws),default=0.0) for w,match in zip(weights,similar))/total
-                         for ws in wordsets])
+        places=self.word_places.get(id(wordsets))
+        if places is None:
+            return np.array([sum(w*max((s for v,s in match.items() if v in ws),default=0.0) for w,match in zip(weights,similar))/total
+                             for ws in wordsets])
+        # Visit only the locations that show a matched word (word -> locations index), not every location.
+        result=np.zeros(len(wordsets))
+        for w,match in zip(weights,similar):
+            best=np.zeros(len(wordsets))
+            for v,s in match.items():
+                where=places.get(v)
+                if where is not None:best[where]=np.maximum(best[where],s)
+            result+=w*best
+        return result/total
 
     def content_match(self,query):
         return self.word_match(self.similar(query),self.words)

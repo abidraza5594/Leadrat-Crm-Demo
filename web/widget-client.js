@@ -3,6 +3,9 @@
   const $ = id => document.getElementById(id);
   const ui = Object.fromEntries(['start','mic','mic-lang','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity','viewer-caption'].map(id=>[id,$(id)]));
   const parentOrigin = new URLSearchParams(location.search).get('parent_origin') || location.origin;
+  // A preloaded window waits, already rendered, until the website opens it; then the session starts at once.
+  const preloaded = new URLSearchParams(location.search).get('preload')==='1' && window.parent!==window;
+  let opened = !preloaded;
   const sessionKey='beacon.session:'+parentOrigin;
   const clientId=crypto.randomUUID();
   function savedSession(value) {
@@ -19,6 +22,8 @@
   let session = null, state = null, timer = null, starting = false, sending = false, ending = false, closed = false;
   let failures = 0, stopPending = false, pollRunning = false, frameLoopRunning = false, shownFrameURL = null, hasFrame = false;
   let lastStateError = '', stepsKey = '', firstRender = true;
+  // Version tags of the last state and frame shown; reset whenever the shown copy is not the server's.
+  let stateTag = null, frameTag = null;
   let pendingRequest = null;
   let registrationOpened = false, registrationSubmitting = false, queuedRegistrationMessage = '';
   let registrationEdited = false;
@@ -27,7 +32,7 @@
   function reconnect() {
     if (closed || userEnded || session || reconnectTimer || reconnectAttempts >= 3) return;
     notice('Connecting your workspace…');
-    reconnectTimer=setTimeout(()=>{reconnectTimer=null;start();},1000 * 2 ** reconnectAttempts++);
+    reconnectTimer=setTimeout(()=>{reconnectTimer=null;start();},300 * 3 ** reconnectAttempts++);
   }
   const rendered = new Map();
   const active = () => !!session && !ending && !closed;
@@ -54,7 +59,7 @@
   const notice = text => show(ui.notice, text);
   function controls() {
     $('close').disabled = starting || ending;
-    ui.start.hidden = !!session; ui.start.disabled = starting; setText(ui.start, starting ? 'Connecting…' : 'Start a session ↗');
+    ui.start.hidden = !!session || !opened; ui.start.disabled = starting; setText(ui.start, starting ? 'Connecting…' : 'Start a session');
     ui.message.disabled = !canSend(); ui.send.disabled = !canSend() || !ui.message.value.trim(); ui.mic.disabled = !canSend();
     ui.suggestions.hidden = !session; ui.suggestions.querySelectorAll('button').forEach(b=>b.disabled=!canSend());
     ui.end.disabled = !session || ending; ui.stop.disabled = !session || stopPending || !state?.busy;
@@ -108,7 +113,7 @@
     const controller = new AbortController(); const timeout = setTimeout(()=>controller.abort(), timeoutMs);
     try {
       const response = await fetch(path,{...options,signal:controller.signal,headers:{'X-Beacon-Client':clientId,...(options.body?{'Content-Type':'application/json'}:{}),...(target?{'X-Beacon-Token':target.token}:{}),...options.headers}});
-      if (!response.ok) {
+      if (!response.ok && response.status !== 304) {
         let detail = '', fieldErrors={}, code=null; try {
           const data = await response.json();
           if(Array.isArray(data.detail)) {
@@ -155,7 +160,8 @@
   function renderSteps(steps) {
     const key = JSON.stringify(steps); if (key === stepsKey) return; stepsKey = key;
     ui.activity.hidden = !steps.length; ui.steps.replaceChildren();
-    steps.forEach(step=>{const li=document.createElement('li');li.className='step-'+(step.status||'');li.textContent=step.title||'Workspace action';const detail=document.createElement('span');detail.textContent=[step.status,step.detail].filter(Boolean).join(' · ');li.append(detail);ui.steps.append(li);});
+    const labels={running:'In progress',verified:'Done',overview_only:'Overview',stopped:'Stopped',failed:'Could not complete',blocked:'Not allowed'};
+    steps.forEach(step=>{const li=document.createElement('li');li.className='step-'+(step.status||'');li.textContent=step.title||'Workspace action';const detail=document.createElement('span');detail.textContent=[labels[step.status]||step.status,step.detail].filter(Boolean).join(' · ');li.append(detail);ui.steps.append(li);});
   }
   function render(next) {
     state = next;
@@ -193,11 +199,16 @@
     if(!active() || target!==session || pollRunning) return;
     clearTimeout(timer);pollRunning=true;
     try {
-      const response=await request(endpoint('',target),{},target,4000);const next=await response.json();
+      // Unchanged state comes back as 304 without a body; nothing to parse or render.
+      const response=await request(endpoint('',target),stateTag?{headers:{'If-None-Match':stateTag}}:{},target,4000);
+      const next=response.status===304?null:await response.json();
       if(target!==session || !active())return;
       if(failures) {error('');failures=0;}
-      render(next);
-      if(['ended','closed'].includes(next.status)){await endSession(false);return;}
+      if(next){
+        stateTag=response.headers.get('ETag');
+        render(next);
+        if(['ended','closed'].includes(next.status)){await endSession(false);return;}
+      }
       if(!frameLoopRunning) frameLoop(target);
     } catch(e) {
       if(target!==session || !active())return;
@@ -209,7 +220,7 @@
         else notice('Access to this session was refused. Please check the connection settings.');
         return;
       }
-    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy?100:300));}
+    } finally {pollRunning=false;if(active()&&target===session)timer=setTimeout(()=>poll(session),failures?Math.min(500*failures,5000):(state?.busy || ['starting','initializing','reconnecting'].includes(state?.status)?100:300));}
   }
 
   // ---- Live screen: its own loop, decode before swapping, never blank on a transient miss.
@@ -217,30 +228,34 @@
     frameLoopRunning = true;
     try {
       while (active() && target === session) {
-        if (document.hidden || state?.status !== 'ready') { await sleep(400); continue; }
+        if (document.hidden || state?.status !== 'ready') { await sleep(hasFrame ? 400 : 100); continue; }
         const started = performance.now();
         await refreshFrame(target);
-        await sleep(Math.max(60, 220 - (performance.now() - started)));
+        // Faster while Beacon is navigating, so the walkthrough is seen as it happens; slower on a still screen.
+        await sleep(Math.max(40, (state?.busy ? 150 : 250) - (performance.now() - started)));
       }
     } finally { frameLoopRunning = false; }
   }
   async function refreshFrame(target) {
     try {
-      const frame = await request(endpoint('/screen',target),{},target,8000);
+      // A still screen comes back as 304: no download, no decode.
+      const frame = await request(endpoint('/screen',target),frameTag && hasFrame?{headers:{'If-None-Match':frameTag}}:{},target,8000);
+      if (frame.status === 304) { setText(ui['screen-status'],'Live view'); return; }
       if (frame.status === 204) { if (!hasFrame) setText(ui['screen-status'],'Waiting for the live screen'); return; }
+      const tag = frame.headers.get('ETag');
       const blob = await frame.blob();
       if (target!==session || !active() || !blob.type.startsWith('image/')) return;
       const url = URL.createObjectURL(blob);
       const probe = new Image(); probe.src = url;
       try { await probe.decode(); } catch { URL.revokeObjectURL(url); return; }
       if (target!==session || !active() || state?.status!=='ready') { URL.revokeObjectURL(url); return; }
-      const previous = shownFrameURL; shownFrameURL = url; ui.screen.src = url;
+      const previous = shownFrameURL; shownFrameURL = url; ui.screen.src = url; frameTag = tag;
       if (!hasFrame) { hasFrame = true; ui.screen.hidden = false; ui['screen-empty'].hidden = true; }
       setText(ui['screen-status'],'Live view');
       if (previous) requestAnimationFrame(()=>requestAnimationFrame(()=>URL.revokeObjectURL(previous)));
     } catch { if (target===session && !hasFrame) setText(ui['screen-status'],'Connecting to the live screen…'); }
   }
-  function clearScreen(){hasFrame=false;if(shownFrameURL)URL.revokeObjectURL(shownFrameURL);shownFrameURL=null;ui.screen.removeAttribute('src');ui.screen.hidden=true;ui['screen-empty'].hidden=false;}
+  function clearScreen(){hasFrame=false;frameTag=null;if(shownFrameURL)URL.revokeObjectURL(shownFrameURL);shownFrameURL=null;ui.screen.removeAttribute('src');ui.screen.hidden=true;ui['screen-empty'].hidden=false;}
 
   // ---- Voice: one reusable player, bounded lookahead, and a watchdog so a lost event never stalls later replies.
   const voiceQueue = (() => {
@@ -406,7 +421,8 @@
     }
     function setEnabled(value) {
       enabled = value; prefs.set('beacon.voice', value ? 'on' : 'off');
-      ui.voice.setAttribute('aria-pressed', String(value)); setText(ui.voice, value ? '🔊 Voice on' : '🔇 Voice off');
+      ui.voice.setAttribute('aria-pressed', String(value)); ui.voice.title = value ? 'Turn voice off' : 'Turn voice on';
+      setText(ui.voice.querySelector('.label') || ui.voice, value ? 'Voice on' : 'Voice off');
       if (!value) cancel(); else status(idleText());
     }
     function replay(message) {
@@ -430,7 +446,7 @@
     function paint(){
       ui.mic.setAttribute('aria-pressed',String(on));ui.mic.classList.toggle('listening',listening);
       ui.mic.title=on?'Tap to finish speaking':'Speak with Soniox';
-      setText(ui['mic-lang'],lang==='en'?'🗣 English':'🗣 हिन्दी');
+      setText(ui['mic-lang'].querySelector('.label') || ui['mic-lang'],lang==='en'?'English':'हिन्दी');
     }
     function echo(text){
       const recent=voiceQueue.recentSpeech().toLowerCase();
@@ -453,11 +469,11 @@
       if(!active())return;
       if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){status('This browser cannot record audio. Please type.');return;}
       typed=null;voiceQueue.cancel();input.start(lang);
-    },shutdown(){typed=null;input.abort();},switchLanguage(){lang=lang==='en'?'hi':'en';if(on)input.abort();paint();},refresh:paint};
+    },shutdown(){typed=null;input.abort();},sent(){typed=null;input.discard();},switchLanguage(){lang=lang==='en'?'hi':'en';if(on)input.abort();paint();},refresh:paint};
   })();
 
   async function start() {
-    if(starting || session || closed || userEnded)return;
+    if(starting || session || closed || userEnded || !opened)return;
     clearTimeout(reconnectTimer);reconnectTimer=null;
     starting=true;error('');notice('');controls();voiceQueue.unlock();
     try {
@@ -466,13 +482,14 @@
         try{const response=await request(endpoint('',saved),{headers:{'X-Beacon-Attach':'1'}},saved,4000);next={...await response.json(),token:saved.token};resumed=true;}
         catch(e){if(![404,410].includes(e.status))throw e;savedSession(null);}
       }
-      if(!next){const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null,60000);next=await response.json();}
+      // The voice preference comes with the request, so the welcome is spoken without a second round trip.
+      if(!next){const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin,voice:voiceQueue.enabled})},null,60000);next=await response.json();}
       if(!next.id || !next.token)throw new Error('Beacon returned an incomplete session. Please try again.');
       if(closed || userEnded){
         await request(endpoint('',next),{method:'DELETE'},next).catch(()=>{});return;
       }
       reconnectAttempts=0;
-      session={id:next.id,token:next.token};state=next;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
+      session={id:next.id,token:next.token};state=next;stateTag=null;frameTag=null;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
       savedSession(session);
       if(resumed)(next.messages||[]).filter(m=>m.role==='assistant').forEach(m=>voiceQueue.skip(m));
       pendingRequest=null;
@@ -489,6 +506,7 @@
   }
   async function send(message) {
     if(!message.trim() || !canSend())return;
+    talk.sent();
     if(!registered()){openRegistration(message.trim());ui.message.value='';controls();return;}
     const target=session,text=message.trim(),interrupt=!!state?.busy;
     // A response can time out after the server accepted it. Reuse the identifier on retry.
@@ -516,7 +534,7 @@
         if(!(e.status===409&&!e.code||(interrupt&&e.status===422)))throw e;
         await request(endpoint('/stop',target),{method:'POST'},target);await post({message:text});
       }
-      if(target===session){pendingRequest=null;ui.message.value='';render({...state,busy:true});poll(target);}
+      if(target===session){pendingRequest=null;ui.message.value='';stateTag=null;render({...state,busy:true});poll(target);}
     }
     catch(e){voiceHold=-1;if(target===session)error(e.message);}
     finally{sending=false;controls();}
@@ -582,6 +600,7 @@
       if(target===session){
         registrationSubmitting=false;
         if(!result.accepted)registrationOpened=true;
+        stateTag=null;
         render({...state,registration_status:result.status || 'saving',registration_accepted:!!result.accepted,registration_error:null});
         ui.message.focus();
         poll(target);
@@ -593,5 +612,15 @@
   voiceQueue.setEnabled(voiceQueue.enabled);
   window.addEventListener('online',()=>{if(session)poll(session);else reconnect();});
   controls();
-  start();
+  if(preloaded){
+    // Shown only for the moment between the click and the session reply.
+    setText(ui.status,'Connecting…');setText(ui['screen-status'],'Connecting…');
+    setText(ui['empty-description'],'Preparing your live workspace.');
+    window.addEventListener('message',event=>{
+      if(event.source!==window.parent || event.origin!==parentOrigin || event.data?.type!=='beacon.open')return;
+      opened=true;userEnded=false;reconnectAttempts=0;start();
+    });
+    window.parent.postMessage({type:'beacon.ready'},parentOrigin);
+  }
+  else start();
 })();

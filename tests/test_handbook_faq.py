@@ -21,6 +21,7 @@ def test_pure_handbook_question_preserves_pending_customer_extraction():
         s.qual_task=task
         await main.execute(s,'How do I add a new lead status or substatus?')
         assert s.qual_task is task and not task.cancelled()
-        assert not s.steps and 'Global Config' in s.messages[0]['text']
+        # Answered by the contextual handbook path (the exact-wording FAQ lookup is no longer live), with no screen opened.
+        assert not s.steps and s.messages[0]['kind']=='product_answer'
         task.cancel()
     asyncio.run(check())

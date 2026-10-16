@@ -124,7 +124,7 @@ class SemanticKnowledge:
                     'text':d['text'].split('Primary users')[0].strip(),'page':d['page']}
         return list(result.values())
 
-    async def answer(self,question,decision,features,*,history=None,customer=None,location=None,screens=None):
+    async def answer(self,question,decision,features,*,history=None,customer=None,location=None,screens=None,on_draft=None):
         from .local_model import complete
         if not self.ready:await self.warm()
         history=(history or [])[-6:]
@@ -141,8 +141,8 @@ class SemanticKnowledge:
         # product does should hear about the product, not "check permissions before concluding".
         exclude=frozenset() if decision.problem else SUPPORT_SECTIONS
         def relevant(hits):return [h for h in hits if h[1].get('section') not in exclude][:4]
-        global_hits=relevant(await self.retrieve(question_for_search,k=12))
-        context_hits=relevant(await self.retrieve(query,decision.topic if decision.topic!='unknown' else None,k=12))
+        global_hits,context_hits=map(relevant,await asyncio.gather(self.retrieve(question_for_search,k=12),
+            self.retrieve(query,decision.topic if decision.topic!='unknown' else None,k=12)))
         inventory=self.module_inventory()
         # Specific questions need their relevant evidence, not every module's
         # overview. Broad questions retain all overviews; the compact inventory
@@ -211,6 +211,9 @@ class SemanticKnowledge:
                     # to verify in this case.
                     check={'valid':True,'reason':'Document-derived inventory only'}
                     break
+                if on_draft:
+                    try:on_draft(text)
+                    except Exception:pass
                 check=await generate([{'role':'system','content':CHECK_SYSTEM},
                   {'role':'user','content':json.dumps({'answer':text,
                     'module_count':payload['handbook_main_module_count'],

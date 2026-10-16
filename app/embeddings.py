@@ -1,5 +1,6 @@
 """Quantized CPU embeddings without loading PyTorch into the web server."""
 import threading
+from collections import OrderedDict
 import numpy as np
 from .config import ROOT
 
@@ -19,8 +20,24 @@ class Encoder:
         options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
         self.session=ort.InferenceSession(str(folder/'model_quint8_avx2.onnx'),sess_options=options,providers=['CPUExecutionProvider'])
         self.inputs={i.name for i in self.session.get_inputs()};self.lock=threading.Lock()
+        # Handbook retrieval and screen search embed the same message in one turn; keep recent queries.
+        self.recent=OrderedDict()
 
     def encode(self,texts,**kwargs):
+        if isinstance(texts,str):
+            with self.lock:
+                vector=self.recent.get(texts)
+                if vector is not None:
+                    self.recent.move_to_end(texts)
+                    return vector.copy()
+            vector=self._encode(texts)
+            with self.lock:
+                self.recent[texts]=vector
+                if len(self.recent)>256:self.recent.popitem(last=False)
+            return vector.copy()
+        return self._encode(texts)
+
+    def _encode(self,texts):
         single=isinstance(texts,str);rows=[texts] if single else texts;vectors=[]
         with self.lock:
             for start in range(0,len(rows),16):

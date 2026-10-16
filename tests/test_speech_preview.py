@@ -50,7 +50,8 @@ def test_speech_preview_and_optional_auto_send():
    assert sent[-1]['message']=='20k'
    await page.wait_for_timeout(600)
    await page.locator('#speech-auto-send').check()
-   await say('show leads');await page.wait_for_timeout(1500)
+   # Sent after the 2 s pause that keeps a question spoken with a breath together (soniox-input.js).
+   await say('show leads');await page.wait_for_timeout(2600)
    assert sent[-1]['message']=='show leads' and len(sent)==2
    await browser.close()
  asyncio.run(run())

@@ -11,6 +11,8 @@
       const text=this.final.trim();this.final='';
       if(text)this.onUtterance(text);
     }
+    // The visitor sent the draft themselves: earlier speech must not be prepended to the next question.
+    discard(){clearTimeout(this.utteranceTimer);this.final='';}
     async start(language='en') {
       this.abort();const generation=this.generation;this.onState('connecting');
       const filter=this.filter=window.BeaconMicrophoneFilter?.create();

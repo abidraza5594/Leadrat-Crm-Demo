@@ -61,7 +61,8 @@ def test_tab_departure_closes_without_another_visitor(client,monkeypatch):
     path='/api/sessions/'+s['id']
     assert client.post(path+'/detach',headers=h).status_code==204
     deadline=time.monotonic()+1
-    while s['id'] in main.sessions and time.monotonic()<deadline:time.sleep(.01)
+    # The browser shuts down in the background after the session is removed.
+    while (s['id'] in main.sessions or not session.worker.closed) and time.monotonic()<deadline:time.sleep(.01)
     assert s['id'] not in main.sessions and session.worker.closed
 
 def test_reload_attach_cancels_pending_close_and_stale_unload(client,monkeypatch):

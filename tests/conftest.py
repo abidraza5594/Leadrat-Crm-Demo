@@ -9,6 +9,7 @@ def no_hosted_calls(monkeypatch,tmp_path):
     monkeypatch.setattr(config,'PROVIDER','local')
     monkeypatch.setattr(config,'DEEPSEEK_API_KEY','')
     monkeypatch.setenv('BEACON_PREWARM_BROWSER','0')
+    monkeypatch.setenv('BEACON_WARM_VOICE','0')
     monkeypatch.setenv('BEACON_REQUIRE_VISITOR_DETAILS','0')
     monkeypatch.setenv('BEACON_USAGE_FILE',str(tmp_path/'usage.jsonl'))
     monkeypatch.setenv('BEACON_REGISTRATION_DB',str(tmp_path/'registration.sqlite3'))

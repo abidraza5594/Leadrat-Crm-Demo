@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright
 from . import config
 from .device_location import cached_windows_location, known_location
 from .popups import handle_popups, PopupBlocked
+from .visibility import VISIBLE_JS, visible
 
 class DemoError(Exception):pass
 
@@ -17,10 +18,12 @@ LOGIN_FIELDS='#inpLoginPassword,input[type="password"]'
 CLOSE_TIMEOUT=3.0
 LOGIN_BLOCKED=re.compile(r'\baccount (?:has been|is) locked\b|\b(?:must|need to|required to) reset (?:your )?password\b|\bpassword reset (?:is )?required\b',re.I)
 
-async def any_visible(locator):
-    for i in range(await locator.count()):
-        if await locator.nth(i).is_visible():return True
-    return False
+# One round trip instead of one per matching element: the sidebar has dozens of links and this check
+# runs before every screen frame. Same visibility rule as Playwright's is_visible().
+SIGNED_IN_SCRIPT='({nav,password})=>{'+VISIBLE_JS+"""
+    if([...document.querySelectorAll(password)].some(visible))return false;
+    return [...document.querySelectorAll(nav)].some(visible);
+}"""
 # Operator-supplied test credentials stay in process memory so the hidden browser can sign in
 # again when the saved login expires. They are removed from the environment (child processes).
 _LOGIN=(os.environ.pop('BEACON_LOGIN_USER','').strip(),os.environ.pop('BEACON_LOGIN_PASSWORD',''))
@@ -48,6 +51,9 @@ class BrowserWorker:
         self.failure_event=asyncio.Event()
         self.on_failure=None
         self._checkpoint_document=None
+        # A frame captured while the browser waited for its visitor; the first screen request returns it
+        # at once, and every later request captures live.
+        self.ready_frame=None
 
     def signal_failure(self):
         if self.closed:return
@@ -283,9 +289,7 @@ class BrowserWorker:
         """True/False when known; None while a navigation makes the page briefly unreadable."""
         if not self.page or self.page.is_closed():return False
         if urlsplit(self.page.url).path.startswith('/login'):return False
-        try:
-            if await any_visible(self.page.locator(LOGIN_FIELDS)):return False
-            return await any_visible(self.page.locator(NAV))
+        try:return bool(await self.page.evaluate(SIGNED_IN_SCRIPT,{'nav':NAV,'password':LOGIN_FIELDS}))
         except Exception:return None
 
     async def signed_in(self):
@@ -295,7 +299,16 @@ class BrowserWorker:
             await asyncio.sleep(0.25)
         return False
 
+    async def prepare_frame(self):
+        try:self.ready_frame=await self.capture()
+        except Exception:self.ready_frame=None
+
     async def screenshot(self):
+        frame,self.ready_frame=self.ready_frame,None
+        if frame and config.SANDBOX_CONFIRMED and self.alive():return frame
+        return await self.capture()
+
+    async def capture(self):
         if not config.SANDBOX_CONFIRMED or not await self.authenticated():return None
         # Screenshots are read-only and must not wait behind the entire action sequence.
         # No login pixels, raw DOM or customer records sent to the language model.
@@ -326,7 +339,12 @@ class BrowserWorker:
         preview=page.locator('lead-preview')
         if await preview.count():
             back=preview.locator('.ic-circle-chevron-left').first
-            if await back.is_visible():await back.click()
+            if await back.is_visible():
+                await back.click()
+                # The closing preview stays in the page briefly; the next walkthrough would take it for
+                # an open lead, skip choosing one and then miss its tabs.
+                try:await preview.first.wait_for(state='hidden',timeout=5000)
+                except Exception:pass
         if own_changes:
             discard=page.locator('save-changes').get_by_role('button',name=re.compile(r'^Discard$',re.I))
             if await discard.count()==1 and await discard.is_visible():await discard.click()
@@ -362,12 +380,9 @@ class BrowserWorker:
             target=page.get_by_text(section,exact=True)
             try:await target.first.wait_for(state='visible',timeout=6000)
             except Exception:return location['page']+' is open. Its "'+section+'" section is not shown for this account.'
-            for i in range(await target.count()):
-                element=target.nth(i)
-                if await element.is_visible():
-                    await element.scroll_into_view_if_needed()
-                    await element.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
-                    break
+            for element in (await visible(target))[:1]:
+                await element.scroll_into_view_if_needed()
+                await element.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
             return location['page']+' is open and its "'+section+'" section is highlighted.'
 
     async def open_module(self,feature):
@@ -392,9 +407,8 @@ class BrowserWorker:
             except Exception:pass
             target=None
             for candidate in choices:
-                for i in range(await candidate.count()):
-                    element=candidate.nth(i)
-                    if await element.is_visible() and await element.get_attribute('aria-disabled')!='true':target=element;break
+                for element in await visible(candidate):
+                    if await element.get_attribute('aria-disabled')!='true':target=element;break
                 if target is not None:break
             if target is None:raise DemoError(f'{label} is not visible or permitted in this sandbox account.')
             await target.click()
@@ -432,9 +446,9 @@ class BrowserWorker:
             # Angular may expose the route before permissions and controls finish rendering.
             try:await candidates.first.wait_for(state='visible',timeout=10000)
             except Exception:raise DemoError('The expected entry control did not become visible. No alternate action was attempted.')
-            visible=[candidates.nth(i) for i in range(await candidates.count()) if await candidates.nth(i).is_visible()]
-            if len(visible)!=1:raise DemoError('The expected entry control is not uniquely visible. No alternate action was attempted.')
-            await visible[0].click()
+            shown=await visible(candidates)
+            if len(shown)!=1:raise DemoError('The expected entry control is not uniquely visible. No alternate action was attempted.')
+            await shown[0].click()
             if feature['id']=='add_lead':
                 await page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"]').first.wait_for(state='visible',timeout=20000)
                 fields=page.locator('input[formcontrolname="name"],input[formcontrolname="firstName"],input[formcontrolname="email"]')
@@ -454,13 +468,14 @@ class BrowserWorker:
         await self.close()
         await self.start()
 
-    async def close(self):
+    async def close(self,save=True):
         self.closed=True
         # Keep tokens the CRM refreshed during this session for the next hidden browser.
+        # A retired idle browser skips this: its replacement may already hold newer tokens.
         from contextlib import suppress
         with suppress(Exception):
             async with asyncio.timeout(CLOSE_TIMEOUT):
-                if self.context and await self.authenticated():await self.save_state()
+                if save and self.context and await self.authenticated():await self.save_state()
         # A failed page/state operation must never strand the Chromium process
         # or its Playwright transport after the session ends.
         for resource,method in ((self.context,'close'),(self.browser,'close'),(self.pw,'stop')):

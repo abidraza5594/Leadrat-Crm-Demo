@@ -8,7 +8,14 @@ class Plan(BaseModel):
     model_config=ConfigDict(extra='forbid')
     feature: Literal[tuple(FEATURES)+('unknown',)]
     demo:bool
-async def warm_up():pass
+async def warm_up():
+    """Open the hosted model's connection while the visitor reads the welcome (setup costs ~0.2 s)."""
+    from . import config, transport
+    if config.PROVIDER!='deepseek' or not config.DEEPSEEK_API_KEY:return
+    try:
+        async with transport.client() as client:
+            await client.get(config.DEEPSEEK_URL+'/models',headers={'Authorization':'Bearer '+config.DEEPSEEK_API_KEY},timeout=5)
+    except Exception:pass
 
 DEVANAGARI={w:r for r,words in {
     'lead':'लीड','leads':'लीड्स','status':'स्टेटस','stage':'स्टेज','note':'नोट','notes':'नोट्स नोटस','meeting':'मीटिंग',

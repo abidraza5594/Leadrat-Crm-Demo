@@ -1,9 +1,7 @@
 """Reviewed selectors for the hosted CRM. No model-supplied selectors or mutations."""
 import re
 from .browser import DemoError
-
-async def visible(locator):
-    return [locator.nth(i) for i in range(await locator.count()) if await locator.nth(i).is_visible()]
+from .visibility import visible
 
 async def one(locator, description, click=False):
     from .popups import handle_popups,PopupBlocked

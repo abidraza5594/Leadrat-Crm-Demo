@@ -1,4 +1,4 @@
-import asyncio,time
+import asyncio,json,time
 from types import SimpleNamespace
 from app import main
 
@@ -11,7 +11,7 @@ def test_slow_crm_refresh_does_not_block_session_poll(monkeypatch):
   try:
    result=await asyncio.wait_for(main.state(s.id,req),0.25)
    first=s.refresh_task
-   assert result['status']=='ready'
+   assert json.loads(result.body)['status']=='ready'
    await main.state(s.id,req)
    assert s.refresh_task is first
   finally:

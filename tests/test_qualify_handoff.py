@@ -72,7 +72,7 @@ def test_discovery_asks_one_unknown_at_a_time_then_closes_with_contact():
         # Resolve/skip each pending question before asking the next one.
         s.pending_discovery=None
         asked += [m['text'] for m in s.messages[before:]]
-    assert len(asked) == len(main.DISCOVERY)+1 and asked[0].startswith('To tailor the demo')
+    assert len(asked) == len(main.DISCOVERY)+1 and asked[0].startswith('So I can tailor the demo')
     assert asked[-1].startswith('Would you like someone from Leadrat to contact you')
 
 def test_no_hosted_inference_fallback_even_with_legacy_key(monkeypatch):

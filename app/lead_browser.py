@@ -33,10 +33,10 @@ async def walkthrough(worker, feature):
         fields=[] if already_add else await worker.open_feature({**feature,'id':'add_lead' if key=='lead_sources' else key})
         if key=='lead_sources':
             await one(page.locator('ng-select[formcontrolname="leadSource"]'),'Lead source')
-            return 'The Source control on Add Lead is visible.'
+            return "Here's the Source field on the Add Lead form."
         if key=='add_lead':
-            return 'The Add Lead form is open. I will save only after you confirm the details.'
-        return 'The requested form is visible.'
+            return "The Add Lead form is open. I'll only save after you confirm the details."
+        return "Here's the form you asked about."
     list_controls={
         'search':'#search-dropdown input', 'columns':'.show-hide-gray ng-select',
         'date_filter':'multi-date-filter', 'saved_filters':'#saved-filter',
@@ -49,14 +49,14 @@ async def walkthrough(worker, feature):
             # Read-only highlight of a representative control; never selects rows or duplicates.
             await targets[0].scroll_into_view_if_needed()
             await targets[0].evaluate("el => el.style.outline='3px solid #18aa83'")
-            return 'The relevant list control is highlighted. No list preference or record was changed.'
+            return "I've highlighted that control in the list. Nothing has been changed."
         if key=='export':
             await one(page.get_by_text(re.compile(r'^\s*Export\s*$',re.I)), 'Export control')
-            return 'The Export entry is highlighted; no export was started.'
+            return "I've highlighted Export. I haven't started an export."
         if key=='filters':
             await one(page.locator('manage-leads').get_by_text(re.compile(r'^\s*Filter\s*$',re.I)),'Lead filter',True)
             await one(page.locator('leads-advance-filter'),'Advanced filters')
-            return 'The advanced filter form is open.'
+            return "Here are the advanced filters."
         preview=page.locator('lead-preview')
         if not await preview.count():
             rows=page.locator('lead-name-section .header-6.text-secondary')
@@ -80,15 +80,15 @@ async def walkthrough(worker, feature):
                 await one(option,'Schedule '+label,True)
                 await one(root.locator('[formcontrolname="scheduledDate"],[formcontrolname="ScheduledDate"]'),'Appointment date and time')
                 await worker.remember_demo_form()
-                return 'The scheduling option and appointment date/time field are visible. The selection is unsaved.'
-            return 'The lead status editor is visible. No status has been saved.'
+                return "Here's the scheduling option, with its date and time field. I haven't saved anything."
+            return "Here's the status editor for this lead. I haven't saved any change."
         roots={'notes':'lead-notes','history':'lead-history','documents':'leads-document-upload','reassign':'individual-reassign'}
         if key in roots:
             root=preview.locator(roots[key]);await one(root,feature['title'])
             if key=='reassign':
                 await one(root.get_by_role('button',name=re.compile(r'^(Re-Assign|Assign) Lead$',re.I)),'Reassign lead',True)
                 await one(root.locator('ng-select').first,'Owner selection')
-            return feature['title']+' controls are visible.'
+            return "I've opened "+feature['title'].lower()+' for this lead.'
         if key in {'email','whatsapp','sms','edit_lead','whatsapp_chat','whatsapp_api'}:
             channel='whatsapp' if key.startswith('whatsapp') else key
             selector={'email':'#clkMailLead','whatsapp':'#clkWhatsappLead','sms':'#clkSMS','edit_lead':'[title="Edit"]'}[channel]
@@ -148,6 +148,6 @@ async def walkthrough(worker, feature):
                     if getattr(worker,'notify',None):worker.notify('I am opening '+label+'. The available choices depend on this account configuration.')
                     await one(chosen[1],label,True)
                 await one(page.locator(roots),'Configured message composer')
-            return feature['title']+' form is visible; nothing was submitted.'
+            return "Here's the "+feature['title']+" form. Nothing has been sent."
         # These topics have a source-backed explanation and a preview, not a completed nested demo.
-        return 'The lead Overview is visible. The specific '+feature['title'].lower()+' operation has not been opened or executed.'
+        return "Here's this lead's Overview. The "+feature['title'].lower()+' step itself has not been opened or executed.'

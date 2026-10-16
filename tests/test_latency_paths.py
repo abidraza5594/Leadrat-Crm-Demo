@@ -34,7 +34,7 @@ def test_fixed_phrases_are_synthesised_once_kept_on_disk_and_served_instantly(mo
 def test_every_fixed_reply_is_prepared(monkeypatch):
     from app import main
     phrases=set(main.fixed_phrases())
-    for text in (main.WELCOME,main.offer_text('leads'),main.CONTACT_QUESTION,'And to continue: '+main.DISCOVERY[0][1]):
+    for text in (main.WELCOME,main.offer_text('leads'),main.CONTACT_QUESTION,main.reask(main.DISCOVERY[0][1])):
         assert set(main.speech_parts(text))<=phrases
 
 

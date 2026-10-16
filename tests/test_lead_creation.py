@@ -48,3 +48,25 @@ def test_cancel_and_invalid_phone_never_save():
   assert s.lead_draft['phase']=='phone'
   await lead_creation.handle(s,'cancel');assert s.lead_draft is None
  asyncio.run(run())
+
+def test_a_question_mid_form_leaves_the_unsaved_lead_and_is_answered(isolated_conversation_model):
+ """Live report: during Add Lead, "Explain lead sources" was taken as the customer's name, and
+ "explain me every thin in global config" was rejected as a phone number."""
+ assert not lead_creation.aside('Rahul Sharma','name') and not lead_creation.aside('Can Yilmaz','name')
+ assert not lead_creation.aside('+91 98765 43210','phone') and not lead_creation.aside('rahul@example.com','email')
+ for text,phase in [('Explain lead sources','name'),('explain me every thin in global config','phone'),
+                    ('what is a lead source?','email'),('lead source kya hai','name')]:
+  assert lead_creation.aside(text,phase),text
+ isolated_conversation_model['Explain lead sources']={'kind':'product','feature':'lead_sources','topic':'Lead Management','demo':False}
+ async def run():
+  s=main.Session(worker=Worker(),pending_discovery='pain_points');await lead_creation.begin(s)
+  s.messages.append({'id':'u1','role':'user','text':'Explain lead sources'})
+  await main.execute(s,'Explain lead sources')
+  texts=[m['text'] for m in s.messages]
+  assert s.lead_draft is None and "Sure, let's leave the new lead for now. Nothing has been saved." in texts
+  assert not any(t.startswith('What is their phone number') for t in texts)
+  assert any(m.get('kind')=='product_answer' for m in s.messages)
+  # The business question that was open before Add Lead comes back once, in passing.
+  assert s.pending_discovery=='pain_points' and s.messages[-1]['text'].startswith('By the way, what is the biggest problem')
+  if s.qual_task:s.qual_task.cancel();await asyncio.gather(s.qual_task,return_exceptions=True)
+ asyncio.run(run())

@@ -376,14 +376,17 @@ class BrowserWorker:
             if not await self.signed_in():raise DemoError('The CRM session expired. The demo stopped.')
             self.demo_form_signature=None
             section=location.get('section')
-            if not section:return location['page']+' is open.'
+            # Said to the visitor after the page was verified: "Leads › Manage Leads" reads as "the Manage Leads page".
+            name=location['page'].split(' › ')[-1]
+            name='the '+name+('' if name.lower().endswith('page') else ' page')
+            if not section:return "I've opened "+name+' for you.'
             target=page.get_by_text(section,exact=True)
             try:await target.first.wait_for(state='visible',timeout=6000)
-            except Exception:return location['page']+' is open. Its "'+section+'" section is not shown for this account.'
+            except Exception:return "I've opened "+name+', but its "'+section+"\" section isn't shown for this account."
             for element in (await visible(target))[:1]:
                 await element.scroll_into_view_if_needed()
                 await element.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
-            return location['page']+' is open and its "'+section+'" section is highlighted.'
+            return "I've opened "+name+' and highlighted its "'+section+'" section.'
 
     async def open_module(self,feature):
         if not config.SANDBOX_CONFIRMED:raise DemoError('A test-data sandbox must be configured before showing CRM screens.')

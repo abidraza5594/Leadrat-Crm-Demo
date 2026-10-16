@@ -112,7 +112,7 @@ def test_correction_while_a_business_question_is_pending_is_not_saved_as_a_fact(
     s=main.Session(worker=Worker(),pending_discovery='organisation.type')
     run(s,'me lead status nahi lead report ke ander status ki bat kar rha hu')
     assert not s.discovery_answers and s.worker.located==['/global-config']
-    assert s.messages[-1]['text'].startswith('And to continue:')
+    assert s.messages[-1]['text'].startswith('By the way,')
 
 def test_business_facts_given_with_a_product_question_are_kept(monkeypatch):
     planner(monkeypatch,base(show='w:leads',updates=[{'field':'organisation.type','value':'developer','evidence':'developer','summary':''}]))

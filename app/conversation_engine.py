@@ -68,6 +68,8 @@ class Decision(BaseModel):
     problem:bool=False
     # The latest message as one standalone request, references to earlier turns resolved.
     understanding:str=Field(default='',max_length=400)
+    # The visitor tells Beacon itself to change, delete, send or export CRM data now (not asking how).
+    change_request:bool=False
 
 
 class TurnState(TypedDict,total=False):
@@ -104,6 +106,7 @@ For the business-type question, an ordinary answer meaning "I am a developer" in
 show: for product, the id of the screen option to demonstrate, or "none". Pick the option that shows exactly what they ask about: where it is configured when they ask how to set something up, where it is viewed when they ask to see it, the screen they meant when they correct Beacon, the offered screen when they accept the offer. When they ask about or to see a module, feature, report or list by name, even misspelled, show the option with that name; a module's landing page lists its pages. Explaining a named module includes showing its main screen by default, even if the visitor did not say "show". Resolve speech transcription mistakes by meaning and context. Choose "none" only for general questions about the whole product or what Beacon can do, when no option shows what they ask about, and for every kind other than product. Showing an unrelated screen is worse than showing nothing.
 no_demo_quote: empty unless they explicitly ask not to open or show a screen; then copy their exact words.
 problem: true only when they report something not working, missing or wrong in their own CRM.
+change_request: true only when the latest message tells Beacon itself to change, delete, send, export, upload, assign or save CRM data now. Asking how something is done, where it is done, or to see or learn it is false, in any language ("lead assign karna sikhao" is false; "delete this lead" is true).
 updates: facts the latest message states about the visitor's own business; each has field, value, evidence (an exact substring of the latest message) and summary. Fields: organisation.type (brokerage, developer, channel_partner, other_real_estate, unrelated); organisation.agents (sales team size: copy the number phrase as value); monthly_leads (new leads per month: copy the number phrase as value); pain_points; process (current tool or way of working); influence (who decides); next_step (when they want a CRM); consent ("true" or "false": permission for Leadrat sales to contact them; sharing a phone number or email in reply to our contact question is permission); contact ("true" when the message contains an email address or phone number). For pain_points, process, influence and next_step the value is their own words, and summary is a short clause addressed to them that starts with "you" (at most 12 words, correct English); summary is empty for other fields. Read short answers together with our pending question. Never invent facts and never take facts from Beacon's messages. A message can be product and still carry updates.
 skip: true only if they ask to skip our pending question.
 reply: for chat and clarify, one or two short, friendly sentences for Beacon to say, in the same language as the visitor's latest message (English if they wrote English); otherwise empty. Never state product facts or promise actions in reply.
@@ -114,12 +117,12 @@ FACT_FIELDS=list(QUESTIONS)
 
 def plan_schema(option_ids):
     return {'type':'object','additionalProperties':False,
-     'required':['understanding','kind','show','no_demo_quote','problem','updates','skip','reply'],
+     'required':['understanding','kind','show','no_demo_quote','problem','change_request','updates','skip','reply'],
      'properties':{
       'understanding':{'type':'string'},
       'kind':{'type':'string','enum':['product','customer','chat','clarify','repeat','stop','decline']},
       'show':{'type':'string','enum':[*option_ids,'none']},
-      'no_demo_quote':{'type':'string'},'problem':{'type':'boolean'},
+      'no_demo_quote':{'type':'string'},'problem':{'type':'boolean'},'change_request':{'type':'boolean'},
       'updates':{'type':'array','maxItems':8,'items':{'type':'object','additionalProperties':False,
         'required':['field','value','evidence','summary'],
         'properties':{'field':{'type':'string','enum':FACT_FIELDS},'value':{'type':'string'},
@@ -277,6 +280,7 @@ class ConversationEngine:
                 if selected in by_id:show=selected
             raw['reply']=str(raw.get('reply') or '')[:450]
             raw['problem']=bool(raw.get('problem',False))
+            raw['change_request']=bool(raw.get('change_request',False))
             raw.setdefault('updates',[]);raw['skip']=bool(raw.get('skip',False))
             if 'feature' not in raw:
                 chosen=by_id.get(show) if raw.get('kind')=='product' else None
@@ -332,7 +336,8 @@ class ConversationEngine:
 
     async def ground(self,state,config=None):
         d=Decision.model_validate(state['decision'])
-        if d.kind!='product':return {'answer':{}}
+        # A refused data-change command needs no handbook answer.
+        if d.kind!='product' or d.change_request:return {'answer':{}}
         on_draft=((config or {}).get('configurable') or {}).get('on_draft')
         # The standalone understanding carries follow-ups ("isme kya hota hai") to the handbook search.
         question=d.understanding or state['message']

@@ -142,8 +142,8 @@
     for (const m of messages) {
       const existing = rendered.get(m.id);
       if (existing) { previousRole = m.role; continue; }
-      // Acknowledgements ("Let me check that for you.") are voice only.
-      if (m.kind === 'ack') continue;
+      // Acknowledgements ("Let me check that for you.") are voice only; the registration record is not chat.
+      if (m.kind === 'ack' || m.kind === 'customer_registration') continue;
       if (!rendered.size) box.replaceChildren();
       const article = document.createElement('article'); article.className = 'message ' + (m.role==='user' ? 'user' : 'assistant');
       // Consecutive Beacon replies read as one turn; only the first carries the name.
@@ -595,7 +595,8 @@
       registrationEdited=false;
       registrationOpened=false;controls();
       fields.set('phone',number);
-      const response=await request(endpoint('/visitor',target),{method:'POST',body:JSON.stringify(Object.fromEntries(fields))},target);
+      // With a question waiting, Beacon's reply says it is going to it rather than asking what to explore.
+      const response=await request(endpoint('/visitor'+(queuedRegistrationMessage?'?queued=true':''),target),{method:'POST',body:JSON.stringify(Object.fromEntries(fields))},target);
       const result=await response.json();
       if(target===session){
         registrationSubmitting=false;

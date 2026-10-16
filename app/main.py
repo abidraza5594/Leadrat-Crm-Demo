@@ -107,6 +107,8 @@ class Session:
     fact_evidence:dict=field(default_factory=dict)
     customer_revision:int=0
     discovery_misses:dict=field(default_factory=dict)
+    # Business questions already raised again after a product answer (each is re-asked at most once).
+    reasked:set=field(default_factory=set)
     acknowledged:bool=False
     qual_dirty:bool=False
     # The visitor said they were finished; a repeated "nothing" gets a short reply, not the goodbye again.
@@ -442,8 +444,9 @@ def conversation_context(s,message):
     # make a short answer appear to answer itself instead of the last question.
     if messages and messages[-1]['role']=='user' and messages[-1]['text']==message:
         messages=messages[:-1]
+    # The registration record (name, email, phone) is kept for lead scoring, not sent with every question.
     history=[{'role':m['role'],'text':m['text'][:240]} for m in messages
-             if m.get('kind') not in {'ack','lead_creation'}][-8:]
+             if m.get('kind') not in {'ack','lead_creation','customer_registration'}][-8:]
     return dict(session_id=s.id,message=message,history=history,customer=s.discovery_answers,
         pending_question=s.pending_discovery,last_feature=s.last_feature,last_offer=s.offer,
         last_location=s.last_location)
@@ -457,16 +460,9 @@ async def execute(s,message):
         # Form values/confirmation are validation, not product intent routing.
         if s.lead_draft:
             from .lead_creation import handle
-            if await handle(s,message):return
-        if declined(message):
-            s.opted_out=True;s.discovery_answers['consent']=False;s.pending_discovery=None
-            s.customer_revision+=1
-            needs_qualification=True
-            s.say('Understood. I will not request contact details or send a follow-up. You can continue exploring the product.')
-            return
-        if write_request(message):
-            s.steps.append({'title':'Requested CRM change','status':'blocked','detail':READ_ONLY})
-            s.say(READ_ONLY);return
+            if await handle(s,message,engine.completion):return
+            # The visitor asked something else mid-form and left it: this is an ordinary turn now.
+            lead_turn=bool(s.lead_draft)
         if s.voice_enabled and VOICE_ACK and not s.acknowledged:
             count=len(s.messages)
             async def acknowledge():
@@ -478,7 +474,7 @@ async def execute(s,message):
             # so the live view changes within seconds instead of after the text.
             nonlocal demo
             d=Decision.model_validate(decision)
-            if d.kind!='product' or not d.demo:return
+            if d.kind!='product' or not d.demo or d.change_request:return
             if location:
                 step={'title':location['page'],'status':'running','detail':'Opening the CRM screen for this question.'};s.steps.append(step)
                 demo=(step,asyncio.create_task(recovery.read_action(s,lambda:s.worker.open_location(location))))
@@ -497,19 +493,25 @@ async def execute(s,message):
         if s.messages and s.messages[-1]['role']=='user' and s.messages[-1]['text']==message:
             s.messages[-1]['kind']='customer_answer' if d.kind=='customer' else 'product_question' if d.kind=='product' else 'unverified_input'
         if s.timings:s.timings[-1].update(plan_ready_ms=round((time.monotonic()-started)*1000),plan_source='langgraph_context')
-        if d.kind=='decline':
+        # The model decides what the visitor meant. Only when it could not read the message at all do these
+        # fixed checks still honour a contact refusal or refuse a data-change command.
+        unread=bool(outcome.get('error'))
+        if d.kind=='decline' or (unread and declined(message)):
             s.opted_out=True;s.discovery_answers['consent']=False;s.pending_discovery=None
             s.customer_revision+=1
             needs_qualification=True
-            s.say('Understood. I will not request contact details or arrange a follow-up.');return
+            s.say("Understood, I won't ask for your contact details or arrange a follow-up. Feel free to keep exploring.");return
+        if d.change_request or (unread and write_request(message)):
+            s.steps.append({'title':'Requested CRM change','status':'blocked','detail':READ_ONLY})
+            s.say(READ_ONLY);return
         if d.kind in {'stop','done'}:
             # A running demo was already interrupted by this message; what remains is the visitor saying
             # they are finished. No further questions or offers until they ask something new.
             s.offer=None;s.pending_discovery=None
-            if s.finished:s.say('Sure. I am here if you need anything else.');return
+            if s.finished:s.say("Sure, I'm here if you need anything else.");return
             s.finished=True
             contacted=s.discovery_answers.get('consent') is True and s.discovery_answers.get('contact') and not s.opted_out
-            s.say('Thank you for exploring Leadrat. '+('The team will contact you on the details you shared. ' if contacted else '')
+            s.say('Thanks for exploring Leadrat! '+('The team will reach out on the details you shared. ' if contacted else '')
                   +'You can close this window now, or ask me anything else whenever you like.');return
         s.finished=False
         if d.kind=='repeat':
@@ -521,10 +523,10 @@ async def execute(s,message):
             pending=s.pending_discovery
             if not d.updates and not d.skip:
                 if pending:s.discovery_misses[pending]=s.discovery_misses.get(pending,0)+1
-                s.say('Could you clarify that answer? I have not changed your details.')
+                s.say("Sorry, I didn't quite get that. Could you put it another way? Your details have not changed.")
                 return
             if record_facts(s,d,pending)=='invalid_contact':
-                s.say('Please share a valid email address or phone number, or say skip.');return
+                s.say("That doesn't look like an email address or phone number. Could you share one, or just say skip?");return
             needs_qualification=bool(d.updates)
             if d.skip:s.pending_discovery=None
             if s.discovery_answers.get('consent') is True and not s.discovery_answers.get('contact'):
@@ -533,13 +535,8 @@ async def execute(s,message):
                 s.say(SAVED_CONTACT,kind='customer_ack')
                 if s.pending_discovery in {'contact','consent'}:s.pending_discovery=None
             else:
-                acknowledgements=[]
-                for u in d.updates:
-                    if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value).replace('_',' ')+'.')
-                    elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {count_description(u)} people on your sales team.')
-                    elif u.field=='monthly_leads':acknowledgements.append(f'Got it — {count_description(u)} new leads per month.')
-                    elif u.field in TEXT_FACTS:acknowledgements.append(restated(u))
-                s.say(' '.join(acknowledgements) or ('No problem, we can skip that.' if d.skip else 'Thanks, I have noted that.'),kind='customer_ack')
+                acknowledgements=[text for text in map(reaction,d.updates) if text]
+                s.say(' '.join(acknowledgements) or ("No problem, let's skip that one." if d.skip else NOTED),kind='customer_ack')
             if s.pending_discovery not in {None,'contact','consent'} and s.discovery_misses.get(s.pending_discovery):
                 # Already asked twice: move on instead of repeating the same question.
                 s.pending_discovery=None
@@ -547,7 +544,7 @@ async def execute(s,message):
                 # The reply answered something else; ask the open question again, once.
                 s.discovery_misses[s.pending_discovery]=s.discovery_misses.get(s.pending_discovery,0)+1
                 question=discovery_question(s,s.pending_discovery)
-                if s.pending_discovery=='contact':question='Please share the email or phone number the team should use.'
+                if s.pending_discovery=='contact':question='Which email or phone number should the team use?'
                 if question:s.say(question)
             else:
                 discover(s)
@@ -567,7 +564,7 @@ async def execute(s,message):
                 s.last_location={k:location.get(k) for k in ('id','path','page','section')}
                 s.say(result,kind='product_answer')
             elif d.demo and answer.get('demo_requested'):
-                s.say('I can explain this, but I could not find a matching screen in this CRM to show.',kind='product_answer')
+                s.say("I can explain this, but I couldn't find a matching screen in this CRM to show you.",kind='product_answer')
             next_question(s);return
         f=FEATURES[d.feature];s.last_feature=d.feature;s.last_location=None
         if not d.demo:next_question(s);return
@@ -578,7 +575,7 @@ async def execute(s,message):
         step['status']='verified';step['detail']=result;s.shown.add(f['module'])
         if f['workspace']:
             s.shown.add(f['id'])
-            s.say('The '+f['title']+' is open.',kind='product_answer')
+            s.say(workspace_opened(f),kind='product_answer')
         else:
             step={'title':f['title']+' controls','status':'running','detail':'Checking the requested controls.'};s.steps.append(step)
             result=await recovery.read_action(s,lambda:walkthrough(s.worker,f))
@@ -692,7 +689,7 @@ async def stop(id:str,request:Request):
         s.say(STOPPED)
     return {'status':'stopped'}
 
-STOPPED='The demonstration has stopped.'
+STOPPED="Okay, I've stopped the walkthrough."
 
 @app.delete('/api/sessions/{id}',status_code=204)
 async def end(id:str,request:Request):
@@ -760,8 +757,17 @@ async def speech_key(id:str,request:Request):
 
 from .registration import Visitor
 
+def registration_welcome(name,queued=False):
+    """Beacon's reply once the details form is accepted (not a claim that the CRM has saved them)."""
+    first=(name.split() or [''])[0]
+    # "ABID" or "abid" from the form reads as "Abid"; mixed case such as "McKay" is kept.
+    if first.isupper() or first.islower():first=first[:1].upper()+first[1:].lower()
+    thanks=f'Thanks, {first}!' if first else 'Thank you!'
+    return thanks+(' Let me take you to your question now.' if queued else
+                   ' What would you like to explore first? Ask me anything, or pick one of the suggestions.')
+
 @app.post('/api/sessions/{id}/visitor',status_code=202)
-async def visitor(id:str,body:Visitor,request:Request):
+async def visitor(id:str,body:Visitor,request:Request,queued:bool=False):
     s=owned(id,request,touch=True)
     async with s.registration_lock:
         if s.registration_status in {'saving','created'}:
@@ -788,10 +794,12 @@ async def visitor(id:str,body:Visitor,request:Request):
         s.registration_task=asyncio.create_task(capture())
         registration_jobs.add(s.registration_task)
         s.registration_task.add_done_callback(registration_jobs.discard)
+        # The visitor just finished the form: answer them instead of leaving the chat silent.
+        s.say(registration_welcome(body.name,queued))
     return {'status':'saving','accepted':True}
 
 # Discovery: short questions, one per turn, only about what is still unknown, then the contact question.
-DISCOVERY=[('organisation.type','To tailor the demo: are you a brokerage, a developer or a channel partner?'),
+DISCOVERY=[('organisation.type','So I can tailor the demo, are you a brokerage, a developer or a channel partner?'),
     ('organisation.agents','How many people are on your sales team?'),
     ('monthly_leads','Roughly how many new leads do you get in a month?'),
     # Ask what they use before what hurts, so a tool name is never mistaken for the problem.
@@ -804,15 +812,38 @@ TEXT_FACTS={'pain_points','process','influence','next_step'}
 def discovery_question(s,path):
     return dict(DISCOVERY).get(path)
 
+# Spoken reactions to the visitor's answers. Each fact gets its own natural lead-in instead of the same
+# "Got it" every time; the wording is built only from validated values, never from free model prose.
+NOTED="Thanks, I've noted that."
+BUSINESS_TYPES={'developer':"Great, so you're a developer.",'brokerage':'Great, so you run a brokerage.',
+    'channel_partner':"Nice, so you're a channel partner.",'other_real_estate':"Thanks, that's helpful.",
+    'unrelated':'Thanks for letting me know.'}
+LEAD_INS={'process':'Okay, so','pain_points':'I see, so','influence':'Good to know,','next_step':'Perfect, so'}
+
+def reaction(update):
+    if update.field=='organisation.type':return BUSINESS_TYPES.get(update.value,"Thanks, that's helpful.")
+    if update.field=='organisation.agents':return f'Okay, a team of {count_description(update)}.'
+    if update.field=='monthly_leads':return f"Thanks, that's {count_description(update)} new leads a month."
+    if update.field in TEXT_FACTS:return restated(update)
+    return ''
+
 def restated(update):
     """Acknowledge a free-text answer in the model's words, whatever the visitor's spelling."""
     summary=' '.join(update.summary.split()).rstrip('.')
-    if summary.casefold().startswith('you ') and len(summary)<=110:return 'Got it — '+summary+'.'
-    return 'Got it, I have noted that.'
+    if summary.casefold().startswith('you ') and len(summary)<=110:return LEAD_INS.get(update.field,'Okay, so')+' '+summary+'.'
+    return NOTED
+
+def reask(question):
+    """An unanswered question raised again in passing after an answer, the way a person would."""
+    question=question.removeprefix('So I can tailor the demo, ')
+    return 'By the way, '+question[:1].lower()+question[1:]
+
+def workspace_opened(feature):
+    return "I've opened the "+feature['title']+' for you.'
 
 def count_description(update):
     value=f'{update.value:,}'
-    return {'exact':value,'approximate':'approximately '+value,'at_least':value+'+',
+    return {'exact':value,'approximate':'about '+value,'at_least':value+'+',
             'more_than':'more than '+value,'at_most':'at most '+value,'less_than':'fewer than '+value}[update.relation]
 
 def record_facts(s,d,pending):
@@ -840,7 +871,7 @@ def known(q,path):
     for part in path.split('.'):value=value.get(part) if isinstance(value,dict) else None
     return value not in (None,'unknown',{'min':None,'max':None})
 
-SAVED_CONTACT='Thank you, I have noted your contact details.'
+SAVED_CONTACT="Thank you, I've noted your contact details."
 # What a visitor usually wants after each screen; the first one not yet shown is suggested.
 NEXT_STEPS={'leads':['add_lead','status','site_visit'],'add_lead':['status','site_visit'],'status':['site_visit','meeting'],
     'site_visit':['notes','projects'],'meeting':['notes','tasks'],'projects':['properties','leads'],'properties':['matching','projects'],
@@ -850,10 +881,15 @@ DEFAULT_STEPS=['leads','add_lead','status','site_visit','projects','tasks','dash
 def next_question(s):
     """Every product answer ends by moving the conversation on: the open business question, else the
     next one, else a concrete next demo the visitor can accept with a plain yes."""
-    if s.pending_discovery:
-        question=discovery_question(s,s.pending_discovery)
-        if question:s.say('And to continue: '+question)
-    else:discover(s)
+    pending=s.pending_discovery
+    if pending:
+        question=discovery_question(s,pending)
+        # Raised again once, in passing. After that the answer chips stay on screen and the visitor
+        # leads; repeating the same question after every answer sounds like a form, not a person.
+        if question and pending not in s.reasked:
+            s.reasked.add(pending);s.say(reask(question));return
+        follow_up(s);return
+    discover(s)
     if not s.pending_discovery:follow_up(s)
 
 def follow_up(s):
@@ -869,15 +905,15 @@ NOTHING_NEXT='What else would you like to see?'
 def offer_text(feature):
     title=FEATURES[feature]['title']
     what='how to '+title[0].lower()+title[1:] if title.split()[0] in {'Add','Change','Schedule','Reassign','Edit','Find','Export','Complete','Manage'} else 'the '+title
-    return f'Shall I show you {what} next? Or ask me about anything else.'
+    return f'Would you like to see {what} next? Or ask me anything else.'
 
 def fixed_phrases():
     """Every sentence Beacon says word for word, split the way it is spoken (see speech_parts)."""
     offered={o for steps in NEXT_STEPS.values() for o in steps}|set(DEFAULT_STEPS)
     texts=[WELCOME,NOTHING_NEXT,SAVED_CONTACT,CONTACT_QUESTION,STOPPED,
-           *(question for _,question in DISCOVERY),*('And to continue: '+question for _,question in DISCOVERY),
+           *(question for _,question in DISCOVERY),*(reask(question) for _,question in DISCOVERY),
            *(offer_text(f) for f in sorted(offered) if f in FEATURES),
-           *('The '+f['title']+' is open.' for f in FEATURES.values() if f['workspace'])]
+           *(workspace_opened(f) for f in FEATURES.values() if f['workspace'])]
     return [part for text in texts for part in speech_parts(text)]
 
 def discover(s):
@@ -955,11 +991,11 @@ async def requalify(s):
     if not s.opted_out and handoffs.eligible(q) and s.handoff_status=='not_requested':
         s.handoff_status='pending'
         s.handoff_status=await handoffs.deliver(handoffs.brief(s.id,q,s.shown))
-        s.say('Thank you. I have shared your details with the Leadrat team, and someone will contact you soon.' if s.handoff_status=='delivered'
-              else 'I could not send your details to the team just now. Please use the contact option on the website.')
+        s.say("All done, I've shared your details with the Leadrat team. Someone will be in touch soon." if s.handoff_status=='delivered'
+              else "I couldn't send your details to the team just now. Please use the contact option on the website.")
     elif q['route']=='graceful_close' and not s.closed_politely and not s.opted_out and q.get('icp_score') is not None:
         s.closed_politely=True
-        s.say('Thank you for exploring Leadrat. It may not be the best fit for your business right now, but you are welcome to keep looking around.')
+        s.say("Thanks for exploring Leadrat. It may not be the right fit for your business just now, but you're welcome to keep looking around.")
 
 def show_handoff(s,result):
     """Development aid: print what the sales team would receive after each turn (BEACON_PRINT_HANDOFF=0 turns it off)."""

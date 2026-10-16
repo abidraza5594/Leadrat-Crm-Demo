@@ -176,3 +176,10 @@ Measured on this laptop with a separate test instance (DeepSeek, edge voice, tes
 
 Live measurements after this pass (same laptop, another heavy job running): click to live CRM frame 160–245 ms after warm-up; product answers 3.7–4.2 s (6.4 s for the first question of a session), voice starting 0.1–0.9 s after the text. The three sequential hosted-model calls remain the main cost.
 
+### Conversation understanding and tone (16 October 2026)
+
+- **Model first, rules as fallback.** "Do not contact me" and commands to change CRM data are judged by the conversation model in the same plan call (`kind=decline`, new `change_request` field), so "lead assign karna sikhao" is answered and "not interested in WhatsApp, show leads" is not an opt-out. The fixed `declined()`/`write_request()` patterns now apply only when the model could not read the message. Nothing in the browser can change CRM data except the confirmed Add Lead flow.
+- **Add Lead form.** Each reply is read by the model in context (value, skip, confirm, cancel or something else), then validated by code. A question mid-form ("Explain lead sources") leaves the unsaved form and is answered; the business question that was open before resumes. Phone numbers still need a country code the visitor stated, and saving needs a short, explicit approval (never one inside a question). Keyword checks remain as an offline fallback.
+- **Tone.** Answers get their own short reactions ("Great, so you're a developer.", "Okay, a team of 25.") instead of "Got it — …" every time; an unanswered business question is raised again once ("By the way, …") rather than after every answer; screen confirmations read "I've opened the Manage Leads page for you." Registration is answered by name, and the registration record (email, phone) is no longer shown as a chat bubble or sent with every model request.
+- Checked with the hosted model: decline/change/question classification for six phrasings and nine Add Lead replies, plus a simulated conversation through discovery and Add Lead.
+

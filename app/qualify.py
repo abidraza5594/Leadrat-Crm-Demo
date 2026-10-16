@@ -109,11 +109,13 @@ def rules_extract(turns):
     pending_count=asked=None
     for t in turns:
         if t['speaker'] != 'visitor':
-            prompt=t['text'].strip()
-            pending_count=('organisation.agents' if prompt=='How many people are on your sales team?' else
-                           'monthly_leads' if prompt=='Roughly how many new leads do you get in a month?' else None)
+            # Beacon may raise a question again in passing ("By the way, how many people ..."), so match
+            # the question wherever it appears in Beacon's message.
+            prompt=t['text'].strip().casefold()
+            pending_count=('organisation.agents' if prompt.endswith('how many people are on your sales team?') else
+                           'monthly_leads' if prompt.endswith('roughly how many new leads do you get in a month?') else None)
             # Beacon's own discovery questions give a short reply its meaning ("excels", "yes").
-            asked=next((path for path,start in ASKED if prompt.startswith(start)),None)
+            asked=next((path for path,start in ASKED if start.casefold() in prompt),None)
             continue
         text = romanize(t['text']).lower(); tid = t['turn_id']
         count=count_reply(text) if pending_count else None

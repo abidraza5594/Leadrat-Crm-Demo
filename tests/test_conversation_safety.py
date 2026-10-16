@@ -12,7 +12,7 @@ def test_product_interruption_preserves_business_question(isolated_conversation_
         s=main.Session(worker=Worker(),pending_discovery='monthly_leads')
         await main.execute(s,'show leads')
         assert s.pending_discovery=='monthly_leads'
-        assert s.messages[-1]['text'].startswith('And to continue:')
+        assert s.messages[-1]['text'].startswith('By the way,')
         assert 'leads' in s.shown
     asyncio.run(run())
 
@@ -121,9 +121,34 @@ def test_browser_cleanup_survives_expired_page_and_failed_close():
         assert worker.context is worker.browser is worker.pw is None
     asyncio.run(run())
 
+def test_answers_get_varied_natural_reactions_and_a_question_is_raised_again_only_once(isolated_conversation_model):
+    """Live report: every answer began with the same "Got it —", and the business-type question was
+    repeated word for word ("And to continue: To tailor the demo: ...") after every product answer."""
+    from app.conversation_engine import CountUpdate,OrganisationUpdate,TextUpdate
+    reactions=[main.reaction(OrganisationUpdate(field='organisation.type',value='developer',evidence='developer')),
+        main.reaction(CountUpdate(field='organisation.agents',value=25,evidence='25')),
+        main.reaction(CountUpdate(field='monthly_leads',value=500,evidence='500')),
+        main.reaction(TextUpdate(field='process',value='WhatsApp',evidence='WhatsApp',summary='you manage leads on WhatsApp')),
+        main.reaction(TextUpdate(field='next_step',value='now',evidence='now',summary='you want a new CRM running now'))]
+    assert reactions==["Great, so you're a developer.",'Okay, a team of 25.',"Thanks, that's 500 new leads a month.",
+                       'Okay, so you manage leads on WhatsApp.','Perfect, so you want a new CRM running now.']
+    assert not any('Got it' in r for r in reactions) and len({r.split()[0] for r in reactions})>=4
+    class Worker:
+        async def open_module(self,f):return 'Verified'
+    async def run():
+        s=main.Session(worker=Worker(),pending_discovery='organisation.type')
+        await main.execute(s,'show leads')
+        assert s.messages[-1]['text']=='By the way, are you a brokerage, a developer or a channel partner?'
+        await main.execute(s,'show tasks')
+        # Asked once already: offer a next step instead; the answer chips stay available.
+        assert s.pending_discovery=='organisation.type' and s.messages[-1]['text'].startswith('Would you like to see ')
+        assert sum('brokerage, a developer' in m['text'] for m in s.messages)==1
+        assert all('Got it' not in m['text'] and 'is open.' not in m['text'] for m in s.messages)
+    asyncio.run(run())
+
 def test_acknowledgement_never_echoes_raw_reply_without_a_restatement():
     from app.conversation_engine import TextUpdate
-    assert main.restated(TextUpdate(field='process',value='i am not usting any tools',evidence='i am not usting any tools'))=='Got it, I have noted that.'
+    assert main.restated(TextUpdate(field='process',value='i am not usting any tools',evidence='i am not usting any tools'))==main.NOTED
 
 def test_early_screen_opening_runs_before_the_answer_is_written(isolated_conversation_model,monkeypatch):
     order=[]
@@ -148,10 +173,10 @@ def test_every_product_answer_ends_with_a_follow_up_question(isolated_conversati
     async def run():
         s=main.Session(pending_discovery='organisation.type')
         await main.execute(s,'tell me more')
-        assert s.messages[-1]['text']=='And to continue: To tailor the demo: are you a brokerage, a developer or a channel partner?'
+        assert s.messages[-1]['text']=='By the way, are you a brokerage, a developer or a channel partner?'
         s=main.Session(discovery_asked=[p for p,_ in main.DISCOVERY]+['consent'])
         await main.execute(s,'tell me more')
-        assert s.messages[-1]['text'].startswith('Shall I show you ')
+        assert s.messages[-1]['text'].startswith('Would you like to see ')
     asyncio.run(run())
 
 def test_sharing_a_number_after_the_contact_question_is_permission(isolated_conversation_model):
@@ -173,8 +198,8 @@ def test_finishing_stops_questions_and_offers(isolated_conversation_model):
         s=main.Session(offer='notes',discovery_answers={'consent':True,'contact':True})
         await main.execute(s,'no thanks')
         assert s.offer is None and s.pending_discovery is None and len(s.messages)==1
-        assert 'The team will contact you' in s.messages[0]['text'] and not s.messages[0]['text'].rstrip().endswith('next?')
+        assert 'The team will reach out' in s.messages[0]['text'] and not s.messages[0]['text'].rstrip().endswith('next?')
         await main.execute(s,'no thanks')
-        assert s.messages[-1]['text']=='Sure. I am here if you need anything else.'
+        assert s.messages[-1]['text']=="Sure, I'm here if you need anything else."
     asyncio.run(run())
 

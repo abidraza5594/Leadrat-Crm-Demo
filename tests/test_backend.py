@@ -160,6 +160,27 @@ def test_demo_continues_while_registration_saves_and_capture_survives_close(clie
     assert completed.wait(2)
 
 
+def test_beacon_answers_the_registration_and_keeps_details_out_of_the_model_history(client,monkeypatch):
+    from app import registration
+    async def register(s,v):pass
+    monkeypatch.setattr(registration,'register',register)
+    monkeypatch.setenv('BEACON_REQUIRE_VISITOR_DETAILS','1')
+    snapshot,h=start(client);s=main.sessions[snapshot['id']];path='/api/sessions/'+s.id
+    details={'name':'ABID RAZA ANSARI','email':'visitor@example.invalid','phone':'+12025550123'}
+    assert client.post(path+'/visitor',headers=h,json=details).json()=={'status':'saving','accepted':True}
+    messages=client.get(path,headers=h).json()['messages']
+    assert messages[-2]['kind']=='customer_registration'
+    assert messages[-1]['role']=='assistant' and messages[-1]['text'].startswith('Thanks, Abid! What would you like to explore first?')
+    history=main.conversation_context(s,'show leads')['history']
+    assert all('visitor@example.invalid' not in m['text'] for m in history)
+    client.delete(path,headers=h)
+    # A question typed before the form is answered next, so the reply does not ask what to explore.
+    snapshot,h=start(client);path='/api/sessions/'+snapshot['id']
+    client.post(path+'/visitor?queued=true',headers=h,json={**details,'name':'McKay Rao'})
+    assert client.get(path,headers=h).json()['messages'][-1]['text']=='Thanks, McKay! Let me take you to your question now.'
+    client.delete(path,headers=h)
+
+
 def test_registration_failure_does_not_overwrite_demo_error(client,monkeypatch):
     from app import registration
     async def fail(s,v):
@@ -312,7 +333,26 @@ def test_new_question_interrupts_running_demo(client):
     assert snap['messages'][-1]['text'].startswith('Hello!')
     client.delete(path,headers=h)
 
+def test_the_model_decides_what_is_a_change_command_and_what_is_a_question(isolated_conversation_model):
+    """Live report: fixed word lists decided intent before the model read the message, so a request to
+    learn something containing "assign" or "not interested" was refused or treated as a contact refusal."""
+    isolated_conversation_model['lead ka owner badal do']={'kind':'product','feature':'reassign','topic':'Lead Management','demo':True,'change_request':True}
+    isolated_conversation_model['lead assign karna sikhao']={'kind':'product','feature':'reassign','topic':'Lead Management','demo':True}
+    isolated_conversation_model["not interested in whatsapp, show leads"]={'kind':'product','feature':'leads','topic':'Lead Management','demo':True}
+    async def run():
+        s=main.Session(worker=Worker())
+        await main.execute(s,'lead ka owner badal do')
+        assert s.worker.calls==[] and s.steps[-1]['status']=='blocked' and s.messages[-1]['text']==main.READ_ONLY
+        s=main.Session(worker=Worker())
+        await main.execute(s,'lead assign karna sikhao')
+        assert all(step['status']!='blocked' for step in s.steps) and s.messages[0]['text']!=main.READ_ONLY
+        s=main.Session(worker=Worker())
+        await main.execute(s,'not interested in whatsapp, show leads')
+        assert not s.opted_out and s.worker.calls==['leads']
+    asyncio.run(run())
+
 def test_destructive_commands_are_blocked_before_any_browser_action():
+    # Messages the model cannot read (no decision here) still meet the fixed safety checks.
     async def run():
         for command in ['delete this lead','export all leads to excel','send whatsapp to every lead','lead delete kar do','show leads and delete them']:
             s=main.Session(worker=Worker())

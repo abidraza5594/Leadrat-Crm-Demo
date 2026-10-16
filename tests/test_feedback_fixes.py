@@ -22,7 +22,8 @@ def test_recovery_restores_before_retry_and_only_once(monkeypatch):
             if len(calls)==1:worker.connected=False;raise TimeoutError()
             return 'restored screen'
         assert await recovery.read_action(s,action)=='restored screen'
-        assert calls==[0,1] and worker.logins==1 and worker.checks==1
+        # Save the restored checkpoint, then the completed action's new checkpoint.
+        assert calls==[0,1] and worker.logins==1 and worker.checks==2
     asyncio.run(run())
 
 def test_no_retry_for_non_auth_error(monkeypatch):

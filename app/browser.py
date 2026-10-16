@@ -44,6 +44,28 @@ class BrowserWorker:
         self.preview_row_id=None
         self.walkthrough_feature=None
         self.location_section=None
+        self.crashed=False
+        self.failure_event=asyncio.Event()
+        self.on_failure=None
+        self._checkpoint_document=None
+
+    def signal_failure(self):
+        if self.closed:return
+        self.failure_event.set()
+        if self.on_failure:self.on_failure()
+
+    def frame_navigated(self,frame):
+        if frame==self.page.main_frame and urlsplit(frame.url).path.startswith('/login') and self.checkpoint:
+            self.signal_failure()
+
+    def page_crashed(self,*args):
+        self.crashed=True
+        self.signal_failure()
+
+    async def screen_fingerprint(self):
+        # Compare locally, without storing customer text or sending it to the model.
+        text=await self.page.locator('body').inner_text()
+        return hashlib.sha256((text+await self.form_signature()).encode()).hexdigest()
 
     async def remember_checkpoint(self):
         if not await self.authenticated():return
@@ -56,6 +78,11 @@ class BrowserWorker:
         self.checkpoint={'url':self.page.url,'row_id':self.preview_row_id,
             'feature':self.walkthrough_feature,'section':self.location_section,'fields':values,
             'scroll':await self.page.evaluate('({x:scrollX,y:scrollY})')}
+        self.checkpoint['fingerprint']=await self.screen_fingerprint()
+        if self._checkpoint_document:
+            try:await self._checkpoint_document.dispose()
+            except Exception:pass
+        self._checkpoint_document=await self.page.evaluate_handle('document')
 
     async def restore_checkpoint(self):
         point=self.checkpoint
@@ -63,25 +90,39 @@ class BrowserWorker:
         parsed=urlsplit(point['url'])
         if '{0.scheme}://{0.netloc}'.format(parsed)!=config.CRM_ORIGIN or parsed.path.startswith('/login'):
             raise DemoError('Invalid saved demo location.')
-        await self.page.goto(point['url'],wait_until='domcontentloaded',timeout=30000)
+        same_document=False
+        if self._checkpoint_document:
+            try:same_document=await self._checkpoint_document.evaluate('d=>d===document')
+            except Exception:pass
+        same_url=self.page.url==point['url']
+        if same_url and same_document and await self.signed_in():
+            await self.check_popups()
+            if self.preview_row_id==point.get('row_id') and point.get('fingerprint')==await self.screen_fingerprint():
+                await self.page.evaluate('p=>scrollTo(p.x,p.y)',point['scroll'])
+                return  # Verified screen survived the timeout; no reload or repeated click.
+        # A fresh document at the saved URL can be restored directly. A partial,
+        # changed document must be reset before replaying reviewed navigation.
+        if not same_url or same_document:
+            await self.page.goto(point['url'],wait_until='domcontentloaded',timeout=30000)
         await self.settle(timeout=8000)
         if not await self.signed_in():raise DemoError('CRM sign-in expired again.')
         if urlsplit(self.page.url).path!=parsed.path:raise DemoError('The previous page is no longer available.')
         if point.get('row_id'):
             # AG Grid's getRowId uses the CRM record ID; never substitute the first lead.
-            row=self.page.locator('[row-id]').filter(has=self.page.locator('lead-name-section'))
-            selected=None
-            for i in range(await row.count()):
-                if await row.nth(i).get_attribute('row-id')==point['row_id']:selected=row.nth(i);break
-            if selected is None:raise DemoError('The previous lead is not visible after sign-in. I did not open a different lead.')
+            selected=self.page.locator('[row-id='+json.dumps(point['row_id'])+']').filter(has=self.page.locator('lead-name-section'))
+            try:await selected.first.wait_for(state='visible',timeout=8000)
+            except Exception:raise DemoError('The previous lead is not visible after sign-in. I did not open a different lead.')
+            if await selected.count()!=1:raise DemoError('The previous lead could not be identified uniquely.')
             await selected.locator('lead-name-section .header-6.text-secondary').click()
+            self.preview_row_id=point['row_id']
         if point.get('feature'):
             from .lead_browser import walkthrough
             await walkthrough(self,point['feature'])
         for item in point.get('fields',[]):
             # Fixed formcontrolname values captured from this page, escaped as CSS strings.
             field=self.page.locator('[formcontrolname='+json.dumps(item['name'])+']')
-            if await field.count()==1 and await field.is_visible():await field.fill(item['value'])
+            if await field.count()!=1 or not await field.is_visible():raise DemoError('The previous form fields could not be restored.')
+            await field.fill(item['value'])
         if point.get('fields'):await self.remember_demo_form()
         if point.get('section'):
             section=self.page.get_by_text(point['section'],exact=True)
@@ -107,6 +148,9 @@ class BrowserWorker:
         except PopupBlocked as exc:raise DemoError(str(exc))
 
     async def start(self,headless=None):
+        self.closed=False
+        self.crashed=False
+        self.failure_event.clear()
         headless=config.HEADLESS if headless is None else headless
         self.pw=await async_playwright().start()
         # Hidden by default: the visitor sees this browser only as frames inside the website popup.
@@ -129,23 +173,28 @@ class BrowserWorker:
         self.page=await self.context.new_page()
         self.page.set_default_timeout(8000)
         self.page.on('dialog',self.dismiss_native)
+        self.page.on('crash',self.page_crashed)
+        self.page.on('close',lambda *args:self.signal_failure())
+        self.page.on('framenavigated',self.frame_navigated)
+        self.browser.on('disconnected',lambda *args:self.signal_failure())
         self.context.on('page',lambda page: asyncio.create_task(page.close()) if page!=self.page else None)
         # With a saved login, open the app itself (it lands on Leads); the CRM sends an invalid login to /login.
-        await self.page.goto(config.CRM_ORIGIN+'/' if self.state_mtime else config.CRM_URL,wait_until='domcontentloaded',timeout=60000)
+        target=config.CRM_ORIGIN+'/' if self.state_mtime else config.CRM_URL
+        if self.checkpoint and self.state_mtime:
+            saved=urlsplit(self.checkpoint['url'])
+            if '{0.scheme}://{0.netloc}'.format(saved)==config.CRM_ORIGIN and not saved.path.startswith('/login'):
+                target=self.checkpoint['url']
+        await self.page.goto(target,wait_until='domcontentloaded',timeout=60000)
         await self.settle()
         if await self.signed_in():await self.save_state()
         elif has_login_credentials():await self.login()
         else:self.login_problem='No saved CRM login was found and no test credentials were supplied.'
 
     async def settle(self,timeout=25000):
-        # Wait for either the app or the login form. The hosted CRM can render the form for a few
-        # seconds before its guard redirects (or refreshes) a saved login, so keep waiting for the app then.
+        # Continue when usable UI arrives, not after a fixed saved-token grace period.
         either=self.page.locator(NAV).first.or_(self.page.locator(LOGIN_FIELDS).first)
         try:await either.first.wait_for(state='visible',timeout=timeout)
         except Exception:return
-        if self.state_mtime and not await self.page.locator(NAV).count():
-            try:await self.page.locator(NAV).first.wait_for(state='visible',timeout=10000)
-            except Exception:pass
 
     async def login(self):
         """One sign-in attempt with the operator's test credentials; returns True when the CRM opens."""
@@ -169,20 +218,24 @@ class BrowserWorker:
         except Exception:
             # Never log field values or raw errors that could contain records.
             self.login_problem='The CRM login form could not be filled.';return False
-        location_banner=page.get_by_text(re.compile(r'Location permission is required',re.I))
-        for _ in range(40):
-            await asyncio.sleep(0.5)
-            if await self.authenticated():
+        # DOM readiness follows the CRM response. No half-second polling delay.
+        try:
+            outcome=await page.wait_for_function("""({nav,password})=>{
+                const visible=e=>!!(e && e.getClientRects().length && getComputedStyle(e).visibility!=='hidden');
+                const text=document.body?.innerText || '';
+                if(location.pathname.includes('two-factor'))return 'mfa';
+                if(/Location permission is required/i.test(text))return 'location';
+                if(/account (?:has been|is) locked|(?:must|need to|required to) reset (?:your )?password|password reset (?:is )?required/i.test(text))return 'blocked';
+                if(!location.pathname.startsWith('/login') && ![...document.querySelectorAll(password)].some(visible) && [...document.querySelectorAll(nav)].some(visible))return 'ready';
+                return false;
+            }""",arg={'nav':NAV,'password':LOGIN_FIELDS},timeout=20000,polling='raf')
+            result=await outcome.json_value();await outcome.dispose()
+            if result=='ready':
                 await self.save_state();return True
-            path=urlsplit(page.url).path
-            if 'two-factor' in path:
-                self.login_problem='The CRM asked for two-factor verification. Sign in once with login.ps1.';return False
-            try:
-                if await any_visible(location_banner):
-                    self.login_problem='The CRM requires device location. Enable Windows Location Services (LOCAL_DEVICE_LOCATION=true) or sign in once with login.ps1.';return False
-                if await any_visible(page.get_by_text(LOGIN_BLOCKED)):
-                    self.login_problem='The CRM refused the sign-in (account locked or password reset required).';return False
-            except Exception:pass
+            if result=='mfa':self.login_problem='The CRM asked for two-factor verification. Sign in once with login.ps1.';return False
+            if result=='location':self.login_problem='The CRM requires device location. Enable Windows Location Services (LOCAL_DEVICE_LOCATION=true) or sign in once with login.ps1.';return False
+            if result=='blocked':self.login_problem='The CRM refused the sign-in (account locked or password reset required).';return False
+        except Exception:pass
         self.login_problem='Automatic sign-in did not complete. Check the test credentials or sign in once with login.ps1.'
         return False
 
@@ -216,7 +269,7 @@ class BrowserWorker:
         return await self.signed_in()
 
     def alive(self):
-        return bool(self.page and not self.page.is_closed() and self.browser and self.browser.is_connected())
+        return bool(not self.crashed and self.page and not self.page.is_closed() and self.browser and self.browser.is_connected())
 
     async def guard(self,route):
         request=route.request
@@ -334,6 +387,9 @@ class BrowserWorker:
             choices=[page.locator('a.nav-item').filter(has_text=re.compile(r'^\s*'+re.escape(label)+r'\s*$',re.I)),
                 page.locator('.module-navbar a').filter(has_text=re.compile(r'^\s*'+re.escape(label)+r'\s*$',re.I)),
                 page.locator(f'[data-ai-nav-route="{module}"]')]
+            # The authenticated shell can appear before the tenant's module menu finishes loading.
+            try:await choices[0].or_(choices[1]).or_(choices[2]).first.wait_for(state='visible',timeout=8000)
+            except Exception:pass
             target=None
             for candidate in choices:
                 for i in range(await candidate.count()):
@@ -392,6 +448,11 @@ class BrowserWorker:
                 return labels
             await page.wait_for_url('**/leads/bulk-upload*',timeout=10000)
             return []
+
+    async def reopen(self):
+        """Replace a crashed browser, retaining this visitor's verified checkpoint."""
+        await self.close()
+        await self.start()
 
     async def close(self):
         self.closed=True

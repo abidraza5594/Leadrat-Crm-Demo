@@ -14,6 +14,11 @@ def planner(monkeypatch,plan,options=(LOCATION,WALK),passages=()):
     seen=[]
     async def findings(state):return list(passages),list(options)
     async def complete(messages,schema,**kw):
+        if schema.get('required')==['supported','value','relation']:
+            from app.conversation_numbers import count_reply
+            value=count_reply(json.loads(messages[-1]['content'])['evidence'])
+            return {'supported':value is not None,'value':value or 0,'relation':'exact'}
+        if schema.get('required')==['supported']:return {'supported':True}
         seen.append((messages,schema))
         content=messages[-1]['content']
         return dict(plan(content) if callable(plan) else plan)
@@ -23,6 +28,46 @@ def planner(monkeypatch,plan,options=(LOCATION,WALK),passages=()):
 
 def base(**kw):
     return {'understanding':'','kind':'product','show':'none','no_demo_quote':'','problem':False,'updates':[],'skip':False,'reply':'',**kw}
+
+
+@pytest.mark.parametrize('message',['मैं डेवलपर हूँ।','I am a developer','Je suis promoteur immobilier.','أنا مطور عقاري'])
+def test_business_type_uses_semantic_evidence_in_every_language(monkeypatch,message):
+    async def findings(state):return [],[]
+    calls=[]
+    async def complete(messages,schema,**kwargs):
+        if schema['required']==['supported']:
+            payload=json.loads(messages[-1]['content']);calls.append(payload)
+            assert payload['message']==message and payload['evidence']==message
+            return {'supported':True}
+        return base(kind='customer',updates=[{'field':'organisation.type','value':'developer','evidence':message,'summary':''}])
+    monkeypatch.setattr(main.engine,'findings',findings)
+    monkeypatch.setattr(main.engine,'completion',complete)
+    result=asyncio.run(main.engine.plan({'message':message,'pending_question':'organisation.type'}))
+    assert result['decision']['kind']=='customer' and result['decision']['updates'][0]['value']=='developer'
+    assert len(calls)==1
+
+
+def test_semantically_unsupported_business_fact_is_not_saved(monkeypatch):
+    async def findings(state):return [],[]
+    async def complete(messages,schema,**kwargs):
+        if schema['required']==['supported']:return {'supported':False}
+        return base(kind='customer',updates=[{'field':'organisation.type','value':'developer','evidence':'another CRM','summary':''}])
+    monkeypatch.setattr(main.engine,'findings',findings)
+    monkeypatch.setattr(main.engine,'completion',complete)
+    result=asyncio.run(main.engine.plan({'message':'another CRM','pending_question':'process'}))
+    assert result['decision']['kind']=='clarify' and result['decision']['updates']==[]
+
+
+def test_named_module_explanation_can_reconcile_missing_demo(monkeypatch):
+    screen={'id':'copilot-page','page':'Sales Copilot','path':'/sales-copilot','section':None,'text':'Priority action queue'}
+    async def findings(state):return [],[screen]
+    async def complete(messages,schema,**kwargs):
+        if schema['required']==['show']:return {'show':screen['id']}
+        return base(understanding='Explain Sales Copilot.')
+    monkeypatch.setattr(main.engine,'findings',findings)
+    monkeypatch.setattr(main.engine,'completion',complete)
+    result=asyncio.run(main.engine.plan({'message':'Tell me about SOURCE Copilot'}))
+    assert result['decision']['demo'] and result['location']['path']=='/sales-copilot'
 
 class Worker:
     def __init__(self):self.opened=[];self.located=[]

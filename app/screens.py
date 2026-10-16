@@ -99,11 +99,20 @@ class Screens:
         """Up to `pages` distinct pages, best first, as (score, option). A section is offered instead of its
         page only when the question names that part of the page. The latest message leads; earlier turns
         decide only when it is a bare follow-up with no subject of its own."""
-        if not self.ready:return []
-        scores=await self.relevance(encoder,query);words=await self.lexical(encoder,query)
+        async def score(text):
+            if self.ready and encoder is not None:
+                try:return await self.relevance(encoder,text),await self.lexical(encoder,text)
+                except Exception:pass
+            # Startup or embedding failure must not hide the CRM page catalogue.
+            similar=self.similar(text);asked=grams(text)
+            name=self.word_match(similar,self.namewords);shown=self.word_match(similar,self.words)
+            spelling=np.array([len(asked&n)/len(n) if n else 0.0 for n in self.names])
+            return WEIGHTS[1]*name+WEIGHTS[2]*shown+WEIGHTS[3]*spelling,(WEIGHTS[1]*name+WEIGHTS[2]*shown)/max(1e-9,WEIGHTS[1]+WEIGHTS[2])
+        scores,words=await score(query)
         if context:
             weight=0.2 if self.distinctive(query) else 0.7
-            scores=(1-weight)*scores+weight*await self.relevance(encoder,query+'\n'+context)
+            contextual,_=await score(query+'\n'+context)
+            scores=(1-weight)*scores+weight*contextual
         asked=grams(query)
         chosen=[];seen=set()
         for i in np.argsort(-scores):

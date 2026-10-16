@@ -3,6 +3,16 @@
   const $ = id => document.getElementById(id);
   const ui = Object.fromEntries(['start','mic','mic-lang','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity','viewer-caption'].map(id=>[id,$(id)]));
   const parentOrigin = new URLSearchParams(location.search).get('parent_origin') || location.origin;
+  const sessionKey='beacon.session:'+parentOrigin;
+  const clientId=crypto.randomUUID();
+  function savedSession(value) {
+    try {
+      if(value===null){sessionStorage.removeItem(sessionKey);return null;}
+      if(value){sessionStorage.setItem(sessionKey,JSON.stringify(value));return value;}
+      const saved=JSON.parse(sessionStorage.getItem(sessionKey)||'null');
+      return saved && typeof saved.id==='string' && typeof saved.token==='string'?saved:null;
+    }catch{return null;}
+  }
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   // Per-viewer convenience only; storage can be unavailable in private windows.
   const prefs = {get(k){try{return localStorage.getItem(k);}catch{return null;}}, set(k,v){try{localStorage.setItem(k,v);}catch{}}};
@@ -97,18 +107,18 @@
   async function request(path, options = {}, target = session, timeoutMs = 15000) {
     const controller = new AbortController(); const timeout = setTimeout(()=>controller.abort(), timeoutMs);
     try {
-      const response = await fetch(path,{...options,signal:controller.signal,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(target?{'X-Beacon-Token':target.token}:{}),...options.headers}});
+      const response = await fetch(path,{...options,signal:controller.signal,headers:{'X-Beacon-Client':clientId,...(options.body?{'Content-Type':'application/json'}:{}),...(target?{'X-Beacon-Token':target.token}:{}),...options.headers}});
       if (!response.ok) {
-        let detail = '', fieldErrors={}; try {
+        let detail = '', fieldErrors={}, code=null; try {
           const data = await response.json();
           if(Array.isArray(data.detail)) {
             const labels={phone:'Check the phone number and selected country.',email:'Enter a valid email address.',name:'Enter a full name between 2 and 75 characters.'};
             for(const item of data.detail){const field=item.loc?.at(-1);if(labels[field])fieldErrors[field]=labels[field];}
             detail=Object.values(fieldErrors).join(' ') || 'Please check the information you entered.';
-          } else detail=typeof data.detail === 'string' ? data.detail : data.message || '';
+          } else {detail=typeof data.detail === 'string' ? data.detail : data.detail?.message || data.message || '';code=data.detail?.code || data.code;}
         } catch {}
         const e = new Error(detail || (response.status===409 ? 'Another session or action is already running. Please wait and try again.' : 'Beacon could not complete that request. Please try again.'));
-        e.status = response.status;e.fieldErrors=fieldErrors; throw e;
+        e.status = response.status;e.fieldErrors=fieldErrors;e.code=code; throw e;
       }
       return response;
     } catch(e) { if(e.name==='AbortError') throw new Error('The connection timed out. Check that Beacon is running and try again.'); throw e; }
@@ -157,6 +167,7 @@
     else if (['starting','initializing'].includes(next.status)) { notice(''); setText(ui['empty-description'], 'Preparing your live workspace. This takes a few seconds.'); }
     else { notice(''); if (!hasFrame) setText(ui['empty-description'], 'Your session is connected. The live workspace will appear here.'); }
     if (next.last_error && next.last_error!==lastStateError) {lastStateError=next.last_error; error(typeof next.last_error==='string'?next.last_error:'The walkthrough needs attention. Try another question.');}
+    else if(!next.last_error && lastStateError){lastStateError='';error('');}
     const messages = Array.isArray(next.messages) ? next.messages : [];
     renderMessages(messages, !!next.busy);
     // Speak only the reply to the latest question; replies to an interrupted one are skipped.
@@ -182,7 +193,7 @@
     if(!active() || target!==session || pollRunning) return;
     clearTimeout(timer);pollRunning=true;
     try {
-      const response=await request(endpoint('',target),{},target);const next=await response.json();
+      const response=await request(endpoint('',target),{},target,4000);const next=await response.json();
       if(target!==session || !active())return;
       if(failures) {error('');failures=0;}
       render(next);
@@ -450,13 +461,20 @@
     clearTimeout(reconnectTimer);reconnectTimer=null;
     starting=true;error('');notice('');controls();voiceQueue.unlock();
     try {
-      const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null,60000);const next=await response.json();
+      let next=null,resumed=false;const saved=savedSession();
+      if(saved){
+        try{const response=await request(endpoint('',saved),{headers:{'X-Beacon-Attach':'1'}},saved,4000);next={...await response.json(),token:saved.token};resumed=true;}
+        catch(e){if(![404,410].includes(e.status))throw e;savedSession(null);}
+      }
+      if(!next){const response=await request('/api/sessions',{method:'POST',body:JSON.stringify({parent_origin:parentOrigin})},null,60000);next=await response.json();}
       if(!next.id || !next.token)throw new Error('Beacon returned an incomplete session. Please try again.');
       if(closed || userEnded){
         await request(endpoint('',next),{method:'DELETE'},next).catch(()=>{});return;
       }
       reconnectAttempts=0;
       session={id:next.id,token:next.token};state=next;voiceQueue.reset();rendered.clear();firstRender=true;stepsKey='';lastStateError='';failures=0;
+      savedSession(session);
+      if(resumed)(next.messages||[]).filter(m=>m.role==='assistant').forEach(m=>voiceQueue.skip(m));
       pendingRequest=null;
       registrationOpened=false;registrationSubmitting=false;queuedRegistrationMessage='';
       registrationEdited=false;
@@ -480,14 +498,22 @@
     voiceQueue.unlock();voiceQueue.cancel();voiceHold=(state?.messages||[]).filter(m=>m.role==='user').length;sending=true;error('');lastStateError='';controls();
     const post=async body=>{
       const payload=JSON.stringify({...body,request_id:requestId});
-      try{return await request(endpoint('/turn',target),{method:'POST',body:payload},target);}
-      catch(e){if(e.status!==429)throw e;await sleep(600);return request(endpoint('/turn',target),{method:'POST',body:payload},target);}
+      let retries=0;const deadline=performance.now()+45000;
+      while(target===session && active()){
+        try{return await request(endpoint('/turn',target),{method:'POST',body:payload},target,8000);}
+        catch(e){
+          if(e.code==='crm_reconnecting' && performance.now()<deadline){await sleep(500);continue;}
+          if(retries>=2 || (e.status && ![429,502,503,504].includes(e.status)))throw e;
+          await sleep(300*2**retries++);
+        }
+      }
+      throw new Error('This session has ended.');
     };
     try {
       try{await post(interrupt?{message:text,interrupt:true}:{message:text});}
       catch(e){
         // A demo that started meanwhile, or an older backend without interrupt: stop it, then ask.
-        if(!(e.status===409||(interrupt&&e.status===422)))throw e;
+        if(!(e.status===409&&!e.code||(interrupt&&e.status===422)))throw e;
         await request(endpoint('/stop',target),{method:'POST'},target);await post({message:text});
       }
       if(target===session){pendingRequest=null;ui.message.value='';render({...state,busy:true});poll(target);}
@@ -499,7 +525,7 @@
     if(remote){userEnded=true;clearTimeout(reconnectTimer);reconnectTimer=null;}
     if(ending)return;const target=session;ending=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();controls();
     if(remote && target){try{await request(endpoint('',target),{method:'DELETE'},target);}catch(e){error('Could not confirm that the session ended. '+e.message);ending=false;controls();poll(target);return;}}
-    session=null;state=null;ending=false;voiceQueue.reset();rendered.clear();stepsKey='';clearScreen();ui.activity.hidden=true;setText(ui.status,'Session ended');ui['status-dot'].className='';setText(ui['screen-status'],'Waiting for a session');setText(ui['empty-description'],'Your session has ended. Start a new session to explore again.');notice('');ui.messages.replaceChildren();const p=document.createElement('p');p.className='welcome';p.textContent='Thanks for exploring. Start a new session whenever you’re ready.';ui.messages.append(p);controls();
+    savedSession(null);session=null;state=null;ending=false;voiceQueue.reset();rendered.clear();stepsKey='';clearScreen();ui.activity.hidden=true;setText(ui.status,'Session ended');ui['status-dot'].className='';setText(ui['screen-status'],'Waiting for a session');setText(ui['empty-description'],'Your session has ended. Start a new session to explore again.');notice('');ui.messages.replaceChildren();const p=document.createElement('p');p.className='welcome';p.textContent='Thanks for exploring. Start a new session whenever you’re ready.';ui.messages.append(p);controls();
   }
   async function stop(){if(!session || stopPending)return;voiceQueue.cancel();stopPending=true;controls();try{await request(endpoint('/stop'),{method:'POST'});error('');notice('The current walkthrough was stopped.');}catch(e){error(e.message);}finally{stopPending=false;controls();}}
   ui.start.addEventListener('click',()=>{userEnded=false;reconnectAttempts=0;start();});ui.end.addEventListener('click',()=>endSession());ui.stop.addEventListener('click',stop);
@@ -521,7 +547,14 @@
       else if(!e.shiftKey&&(document.activeElement===last||document.activeElement===document.body)){e.preventDefault();first.focus();}
     }
   });
-  window.addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();clearScreen();if(session)fetch(endpoint(),{method:'DELETE',headers:{'X-Beacon-Token':session.token},keepalive:true}).catch(()=>{});});
+  // Close a departed tab after a short refresh grace period. A new document's
+  // authenticated attach cancels cleanup; normal background tab switches do not detach.
+  window.addEventListener('pagehide',event=>{
+    closed=true;clearTimeout(timer);talk.shutdown();voiceQueue.cancel();clearScreen();
+    if(session && !event.persisted)fetch(endpoint('/detach'),{method:'POST',keepalive:true,
+      headers:{'X-Beacon-Token':session.token,'X-Beacon-Client':clientId}}).catch(()=>{});
+  });
+  window.addEventListener('pageshow',event=>{if(event.persisted){closed=false;if(session)poll(session);else if(!userEnded)start();}});
   const visitorPhone=window.BeaconPhoneField($('visitor-phone'),$('phone-error'));
   function registrationEdit(){
     registrationEdited=true;
@@ -558,6 +591,7 @@
     finally{if(target===session){registrationSubmitting=false;controls();}}
   });
   voiceQueue.setEnabled(voiceQueue.enabled);
+  window.addEventListener('online',()=>{if(session)poll(session);else reconnect();});
   controls();
   start();
 })();

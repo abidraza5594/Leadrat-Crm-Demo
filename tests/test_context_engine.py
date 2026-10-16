@@ -26,6 +26,8 @@ def test_context_contains_pending_question_history_offer_and_facts(monkeypatch):
     async def run():
         seen=[]
         async def complete(messages,schema,**kwargs):
+            if schema.get('required')==['supported','value','relation']:
+                return {'supported':True,'value':100000,'relation':'exact'}
             seen.append(messages)
             return {'kind':'customer','updates':[{'field':'monthly_leads','value':100000,'evidence':'100k'}],'reply':'Got it — 100,000 leads per month.'}
         monkeypatch.setattr(main.engine,'completion',complete)

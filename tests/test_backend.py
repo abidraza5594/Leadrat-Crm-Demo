@@ -55,6 +55,37 @@ def start(client):
     assert r.status_code==201
     s=r.json();return s,{'X-Beacon-Token':s['token']}
 
+def test_tab_departure_closes_without_another_visitor(client,monkeypatch):
+    monkeypatch.setattr(main,'TAB_CLOSE_GRACE',.03)
+    s,h=start(client);session=main.sessions[s['id']]
+    path='/api/sessions/'+s['id']
+    assert client.post(path+'/detach',headers=h).status_code==204
+    deadline=time.monotonic()+1
+    while s['id'] in main.sessions and time.monotonic()<deadline:time.sleep(.01)
+    assert s['id'] not in main.sessions and session.worker.closed
+
+def test_reload_attach_cancels_pending_close_and_stale_unload(client,monkeypatch):
+    monkeypatch.setattr(main,'TAB_CLOSE_GRACE',.15)
+    s,h=start(client);path='/api/sessions/'+s['id']
+    old={**h,'X-Beacon-Client':'old-document'}
+    new={**h,'X-Beacon-Client':'new-document'}
+    client.get(path,headers={**old,'X-Beacon-Attach':'1'})
+    client.post(path+'/detach',headers=old)
+    assert client.get(path,headers={**new,'X-Beacon-Attach':'1'}).status_code==200
+    assert client.post(path+'/detach',headers=old).status_code==204
+    time.sleep(.2)
+    assert s['id'] in main.sessions and main.sessions[s['id']].leaving_deadline is None
+    assert client.post(path+'/detach').status_code==404
+    client.delete(path,headers=new)
+
+def test_missing_tab_heartbeat_expires_even_with_a_running_demo():
+    async def run():
+        s=main.Session();s.seen=time.monotonic()-main.ABANDONED_AFTER-1
+        s.task=asyncio.create_task(asyncio.sleep(100))
+        try:assert main.session_expired(s,time.monotonic())
+        finally:s.task.cancel();await asyncio.gather(s.task,return_exceptions=True)
+    asyncio.run(run())
+
 def test_origins_capacity_and_ownership(client):
     assert client.post('/api/sessions',json={'parent_origin':'https://evil.invalid'}).status_code==403
     s,h=start(client);path='/api/sessions/'+s['id']

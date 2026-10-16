@@ -42,7 +42,8 @@ def brief(session_id, q, product_areas_shown, created_at=None):
             'icp_score': q.get('icp_score'), 'score_range': q.get('score_range'),
             'score_rationale': q.get('score_rationale', []), 'route': q['route'],
             'recommended_next_step': next_step, 'evidence_turn_ids': evidence, 'consent': bool(q.get('consent')),
-            'created_at': created_at or now(), 'updated_at': now(), 'delivery_status': 'pending'}
+            'created_at': created_at or now(), 'updated_at': now(), 'delivery_status': 'pending',
+            **({'count_details':q['count_details']} if q.get('count_details') else {})}
 
 def eligible(q):
     return q['route'] == 'sales_handoff' and q.get('consent') and bool(q['contact'].get('email') or q['contact'].get('phone'))

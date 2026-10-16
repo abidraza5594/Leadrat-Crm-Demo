@@ -33,6 +33,11 @@ def isolated_conversation_model(monkeypatch,tmp_path):
         'How do I add a new lead status or substatus?':{'kind':'product','feature':'unknown','topic':'Global Config','demo':False},
     }
     async def complete(messages,schema,max_tokens):
+        if schema.get('required')==['supported','value','relation']:
+            from app.conversation_numbers import count_reply
+            value=count_reply(json.loads(messages[-1]['content'])['evidence'])
+            return {'supported':value is not None,'value':value or 0,'relation':'exact'}
+        if schema.get('required')==['supported']:return {'supported':True}
         message=messages[-1]['content'].split('Latest visitor message:\n')[-1].split('Visitor message to classify: ')[-1]
         if message not in rows:raise AssertionError('No fake model decision supplied for '+message)
         return rows[message]

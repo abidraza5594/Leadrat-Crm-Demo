@@ -69,6 +69,8 @@ class Qualification(Extraction):
     score_range: list[int] = Field(min_length=2, max_length=2)
     score_rationale: list[Rationale]
     route: Literal['sales_handoff','human_review','nurture','graceful_close']
+    # Accepted conversation counts may be bounds rather than exact values.
+    count_details: dict[str,dict] = Field(default_factory=dict)
 
 def band_leads(r: Range) -> int | None:
     """One band only: a range spanning bands (e.g. 80-150) stays unknown, as the rules require."""

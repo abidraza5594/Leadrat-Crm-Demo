@@ -38,7 +38,8 @@ VOICE_ACK=os.getenv('BEACON_VOICE_ACK','0')=='1'
 ACK_AFTER=float(os.getenv('ACK_AFTER_MS','2500'))/1000
 
 # A widget polls several times per second; one that has been silent this long was closed or crashed.
-ABANDONED_AFTER=30
+ABANDONED_AFTER=120
+TAB_CLOSE_GRACE=10
 LOGIN_HELP=('The hidden demo browser is not signed in to the test CRM. Operator: run .\\login.ps1 once, '
     'or start Beacon with test credentials. This screen updates automatically after sign-in.')
 
@@ -63,6 +64,9 @@ class Session:
     created:float=field(default_factory=time.monotonic)
     touched:float=field(default_factory=time.monotonic)
     seen:float=field(default_factory=time.monotonic)
+    client_id:str=''
+    leaving_deadline:float|None=None
+    closing:bool=False
     last_completed:float=field(default_factory=time.monotonic)
     status:str='starting'
     messages:list=field(default_factory=list)
@@ -107,6 +111,8 @@ class Session:
     # The CRM page last shown from the screen map, so "isme kya hota hai" refers to it.
     last_location:dict|None=None
     recovery_lock:asyncio.Lock=field(default_factory=asyncio.Lock)
+    recovery_attempts:int=0
+    recovery_checked:float=0
     speech_key_issued:float=0
     registration_status:str='needed'
     registration_accepted:bool=False
@@ -163,6 +169,8 @@ def spawn(coroutine):
     task=asyncio.create_task(coroutine);background.add(task);task.add_done_callback(background.discard)
 
 async def close(s):
+    if s.closing:return
+    s.closing=True
     # Closing the demo must not cancel an accepted backend lead capture.
     for task in [s.task,s.boot,s.relogin,s.qual_task,s.refresh_task]:
         if task and not task.done():
@@ -178,7 +186,11 @@ async def cleanup():
         await asyncio.sleep(15)
         now=time.monotonic()
         for s in list(sessions.values()):
-            if now-s.created>1800 or now-s.touched>900:await close(s)
+            if session_expired(s,now):await close(s)
+
+def session_expired(s,now):
+    working=any(task and not task.done() for task in (s.task,s.boot,s.relogin,s.registration_task))
+    return (s.leaving_deadline is not None and now>=s.leaving_deadline) or now-s.seen>ABANDONED_AFTER or (now-s.touched>900 and not working)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -262,8 +274,14 @@ async def boot(s):
     try:
         if browser_pool.enabled:s.worker=await browser_pool.take()
         else:await s.worker.start()
+        # Browser events wake recovery immediately; HTTP polling remains a fallback.
+        def wake_recovery():
+            if s.status not in {'ready','login_required','error'}:return
+            if s.refresh_task and not s.refresh_task.done():return
+            s.refresh_task=asyncio.create_task(refresh_status(s,immediate=True))
+        s.worker.on_failure=wake_recovery
         if await s.worker.signed_in():
-            s.status='ready';s.say('Your demo is ready. You can ask about Leads, Projects, Tasks or any other feature.')
+            s.status='ready'
         else:
             s.status='login_required'
             s.say('The demo browser is not signed in to the test CRM yet. You can still ask about the supported features, and the live screen will appear here once the operator signs in.')
@@ -274,29 +292,36 @@ async def boot(s):
 async def relogin(s):
     await recovery.restore(s)
 
-async def refresh_status(s):
+async def refresh_status(s,immediate=False):
     """Debounced sign-in state: a navigation or a transient read error must not blank the screen."""
-    if s.status not in {'login_required','ready'}:return
-    if not s.worker.alive():
-        s.status='error';s.last_error='The demo browser has closed. End this session and start again.';return
+    if s.status not in {'login_required','ready','error'}:return
     now=time.monotonic()
     # Actions own the page while they run; a sign-in attempt owns it too.
-    if now-s.auth_checked<0.8 or (s.task and not s.task.done()) or (s.relogin and not s.relogin.done()) or (s.registration_task and not s.registration_task.done()):return
+    if (not immediate and now-s.auth_checked<0.8) or (s.task and not s.task.done()) or (s.relogin and not s.relogin.done()):return
     s.auth_checked=now
+    can_recover=s.recovery_attempts<recovery.MAX_ATTEMPTS and now-s.recovery_checked>=min(2**s.recovery_attempts,8)
+    if not s.worker.alive() or s.status=='error':
+        if can_recover:s.relogin=asyncio.create_task(recovery.restore(s,force=True))
+        return
     if s.status=='login_required' and await s.worker.adopt_saved_login():
-        if hasattr(s.worker,'restore_checkpoint'):await s.worker.restore_checkpoint()
-        s.status='ready';s.auth_lost=None
+        try:
+            if hasattr(s.worker,'restore_checkpoint'):await s.worker.restore_checkpoint()
+        except Exception:
+            s.status='error';s.last_error='Signed in, but the previous demo has not been restored yet.';return
+        s.status='ready';s.auth_lost=None;s.last_error=None;s.recovery_attempts=0
         s.say('The operator has signed in. The test CRM is ready; ask me to show Leads, Projects, Tasks or another feature.')
         return
+    if s.status=='login_required' and can_recover and has_login_credentials():
+        s.relogin=asyncio.create_task(relogin(s));return
     auth=await s.worker.authenticated()
     if auth is None:return
     if auth:
         s.auth_lost=None
         if s.status=='login_required':
-            s.status='ready';s.say('Your demo is ready. You can ask about Leads, Projects, Tasks or any other feature.')
+            s.status='ready'
         return
     s.auth_lost=s.auth_lost or now
-    if s.status=='ready' and now-s.auth_lost>0.8:
+    if s.status=='ready' and (immediate or now-s.auth_lost>0.8):
         s.status='login_required'
         if has_login_credentials():
             s.relogin=asyncio.create_task(relogin(s))
@@ -350,14 +375,14 @@ async def health():
       'knowledge_ready':knowledge.ready,'knowledge_error':knowledge.error}
 
 @app.post('/api/sessions',status_code=201)
-async def create(body:Create):
+async def create(body:Create,request:Request):
     if body.parent_origin not in config.ORIGINS:raise HTTPException(403,'Website origin is not registered')
     async with create_lock:
         for old in list(sessions.values()):
             # A closed tab or crashed page stops polling; reclaim its browser instead of blocking for 15 minutes.
             if time.monotonic()-old.seen>ABANDONED_AFTER:await close(old)
         if sessions:raise HTTPException(409,'One demo is already active. End it before starting another.')
-        s=Session(voice_enabled=body.voice);sessions[s.id]=s
+        s=Session(voice_enabled=body.voice,client_id=request.headers.get('x-beacon-client','')[:80]);sessions[s.id]=s
         # The local model unloads after 30 idle minutes; reload it while the browser boots.
         spawn(warm_up())
         s.say('Welcome to Beacon! I can answer your questions about Leadrat and show you how it works. What would you like to explore?')
@@ -373,6 +398,9 @@ async def create(body:Create):
 @app.get('/api/sessions/{id}')
 async def state(id:str,request:Request):
     s=owned(id,request)
+    if request.headers.get('x-beacon-attach')=='1':
+        s.client_id=request.headers.get('x-beacon-client','')[:80]
+        s.leaving_deadline=None
     # A transient page error must never end the visitor's session.
     if not s.refresh_task or s.refresh_task.done():
         async def refresh():
@@ -484,8 +512,8 @@ async def execute(s,message):
                 acknowledgements=[]
                 for u in d.updates:
                     if u.field=='organisation.type':acknowledgements.append('Got it — '+str(u.value).replace('_',' ')+'.')
-                    elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {u.value:,} people on your sales team.')
-                    elif u.field=='monthly_leads':acknowledgements.append(f'Got it — approximately {u.value:,} new leads per month.')
+                    elif u.field=='organisation.agents':acknowledgements.append(f'Got it — {count_description(u)} people on your sales team.')
+                    elif u.field=='monthly_leads':acknowledgements.append(f'Got it — {count_description(u)} new leads per month.')
                     elif u.field in TEXT_FACTS:acknowledgements.append(restated(u))
                 s.say(' '.join(acknowledgements) or ('No problem, we can skip that.' if d.skip else 'Thanks, I have noted that.'),kind='customer_ack')
             if s.pending_discovery not in {None,'contact','consent'} and s.discovery_misses.get(s.pending_discovery):
@@ -594,13 +622,13 @@ async def turn(id:str,body:Turn,request:Request):
     s=owned(id,request,touch=True)
     if os.getenv('BEACON_REQUIRE_VISITOR_DETAILS','1')=='1' and not (s.registration_accepted or s.registration_status=='created'):
         raise HTTPException(428,'Please complete the details form before starting the conversation.')
-    if s.relogin and not s.relogin.done():raise HTTPException(409,'The CRM is reconnecting. Your conversation is preserved.')
     message=body.message.strip()
     if not message:raise HTTPException(422,'Enter a question')
     message_hash=__import__('hashlib').sha256(message.encode()).hexdigest()
     if body.request_id in s.accepted_turns:
-        if s.accepted_turns[body.request_id]!=message_hash:raise HTTPException(409,'Request ID was already used for a different question')
+        if s.accepted_turns[body.request_id]!=message_hash:raise HTTPException(409,detail={'code':'request_conflict','message':'Request ID was already used for a different question'})
         return {'accepted':True,'duplicate':True}
+    if s.relogin and not s.relogin.done():raise HTTPException(409,detail={'code':'crm_reconnecting','message':'The CRM is reconnecting. Your question will continue after sign-in.'})
     if s.task and not s.task.done() and not body.interrupt:raise HTTPException(409,'A demonstration is running. Stop it first to change the request.')
     if time.monotonic()-s.last_turn<0.5:raise HTTPException(429,'Please wait briefly before another request')
     if s.task and not s.task.done():
@@ -643,6 +671,20 @@ async def stop(id:str,request:Request):
 @app.delete('/api/sessions/{id}',status_code=204)
 async def end(id:str,request:Request):
     await close(owned(id,request));return Response(status_code=204)
+
+@app.post('/api/sessions/{id}/detach',status_code=204)
+async def detach(id:str,request:Request):
+    s=owned(id,request)
+    # A delayed unload from the old document cannot close a refreshed document.
+    if request.headers.get('x-beacon-client','')!=s.client_id:return Response(status_code=204)
+    deadline=time.monotonic()+TAB_CLOSE_GRACE
+    s.leaving_deadline=deadline
+    async def expire_departed_tab():
+        await asyncio.sleep(TAB_CLOSE_GRACE)
+        if sessions.get(id) is s and s.leaving_deadline==deadline:
+            await close(s)
+    spawn(expire_departed_tab())
+    return Response(status_code=204)
 
 class VoicePreference(BaseModel):
     enabled:bool
@@ -742,6 +784,11 @@ def restated(update):
     if summary.casefold().startswith('you ') and len(summary)<=110:return 'Got it — '+summary+'.'
     return 'Got it, I have noted that.'
 
+def count_description(update):
+    value=f'{update.value:,}'
+    return {'exact':value,'approximate':'approximately '+value,'at_least':value+'+',
+            'more_than':'more than '+value,'at_most':'at most '+value,'less_than':'fewer than '+value}[update.relation]
+
 def record_facts(s,d,pending):
     """Save the facts in a validated plan. Returns 'invalid_contact' when a contact quote holds no email or phone."""
     if any(u.field=='contact' and not (re.search(EMAIL,u.evidence) or re.search(PHONE,u.evidence)) for u in d.updates):
@@ -749,6 +796,9 @@ def record_facts(s,d,pending):
     for u in d.updates:
         s.discovery_answers[u.field]=u.value
         s.fact_evidence[u.field]={'quote':u.evidence,'message_id':s.messages[-1]['id'] if s.messages else None}
+        if u.field in {'organisation.agents','monthly_leads'}:
+            s.discovery_answers[u.field+'.relation']=u.relation
+            s.fact_evidence[u.field]['relation']=u.relation
         if u.field==pending:s.pending_discovery=None
         if u.field=='consent' and u.value is False:s.opted_out=True
     if pending=='consent' and any(u.field=='contact' for u in d.updates) and 'consent' not in s.discovery_answers:
@@ -813,9 +863,19 @@ def accepted_qualification(s,result):
     answers=s.discovery_answers
     org=q.organisation.model_copy(update={'type':answers.get('organisation.type','unknown'),
                                           'agents':answers.get('organisation.agents')})
+    count_details={}
+    for field in ('organisation.agents','monthly_leads'):
+        if field in answers and answers.get(field+'.relation','exact')!='exact':
+            count_details[field]={'value':answers[field],'relation':answers[field+'.relation'],
+                                  'evidence':s.fact_evidence.get(field,{}).get('quote','')}
+    if 'organisation.agents' in count_details:org=org.model_copy(update={'agents':None})
     changes={'organisation':org,'consent':answers.get('consent') is True and not s.opted_out}
+    changes['count_details']=count_details
     count=answers.get('monthly_leads')
-    changes['monthly_leads']=Range(min=count,max=count)
+    relation=answers.get('monthly_leads.relation','exact')
+    changes['monthly_leads']=(Range(min=count,max=count) if relation=='exact' else
+        Range(min=count) if relation=='at_least' else Range(min=count+1) if relation=='more_than' and count is not None else
+        Range(max=count) if relation=='at_most' else Range(max=max(0,count-1)) if relation=='less_than' and count is not None else Range())
     for key in ('process','influence','next_step'):
         if key not in answers:changes[key]='unknown'
     # Preserve the visitor's latest accepted problem, even when the extractor
@@ -840,7 +900,7 @@ def accepted_qualification(s,result):
         if tid:evidence[key]=[tid]
         else:evidence.pop(key,None);missing_evidence=True
     changes['evidence']=evidence
-    q=rescore(q.model_copy(update=changes))
+    q=rescore(q.model_copy(update=changes)).model_copy(update={'count_details':count_details})
     if (result['source']!='slm' or missing_evidence) and q.route!='graceful_close':q=q.model_copy(update={'route':'human_review'})
     return q.model_dump()
 

@@ -1,9 +1,15 @@
 /* Microphone audio goes to Soniox with a short-lived, single-use credential. */
 (() => {
   'use strict';
+  const UTTERANCE_PAUSE_MS=2000;
   class SonioxInput {
     constructor({getKey, onText, onUtterance, onState, onError}) {
       Object.assign(this,{getKey,onText,onUtterance,onState,onError});this.generation=0;this.final='';
+    }
+    flushUtterance(){
+      clearTimeout(this.utteranceTimer);
+      const text=this.final.trim();this.final='';
+      if(text)this.onUtterance(text);
     }
     async start(language='en') {
       this.abort();const generation=this.generation;this.onState('connecting');
@@ -42,19 +48,25 @@
           if(generation!==this.generation)return;
           let data;try{data=JSON.parse(e.data);}catch{fail('Invalid speech response. Please try again.');return;}
           if(data.error_code){fail('Soniox could not transcribe this audio. Check the connection or account, then try again.');return;}
+          // Keep short pauses within one question; new speech cancels the pending send.
+          if((data.tokens||[]).some(token=>!['<end>','<fin>'].includes(token.text) && token.text?.trim()))clearTimeout(this.utteranceTimer);
           let interim='',endpoint=false;
           for(const token of data.tokens||[]){
             if(['<end>','<fin>'].includes(token.text)){endpoint=true;continue;}
             if(token.is_final)this.final+=token.text;else interim+=token.text;
           }
           this.onText((this.final+interim).trim());
-          if(endpoint || data.finished){const text=this.final.trim();this.final='';if(text)this.onUtterance(text);}
+          if(data.finished)this.flushUtterance();
+          else if(endpoint){
+            clearTimeout(this.utteranceTimer);
+            this.utteranceTimer=setTimeout(()=>{if(generation===this.generation)this.flushUtterance();},UTTERANCE_PAUSE_MS);
+          }
           if(data.finished){this.abort();}
         };
         socket.onerror=()=>fail('Speech connection failed. You can still type.');
         socket.onclose=()=>{
           if(generation!==this.generation)return;
-          const text=this.final.trim();if(text)this.onUtterance(text);
+          this.flushUtterance();
           this.abort();
         };
       }catch(e){if(generation===this.generation){this.abort();this.onError(e.name==='NotAllowedError'?'Allow microphone access, then tap the microphone again.':e.message);}}
@@ -62,11 +74,11 @@
     stop(){
       if(this.recorder?.state==='recording'){
         this.recorder.stop();this.onState('finishing');
-        this.closeTimer=setTimeout(()=>{const text=this.final.trim();if(text)this.onUtterance(text);this.abort();},2500);
+        this.closeTimer=setTimeout(()=>{this.flushUtterance();this.abort();},2500);
       }else this.abort();
     }
     abort(){
-      this.generation++;clearTimeout(this.connectTimer);clearTimeout(this.maxTimer);clearTimeout(this.closeTimer);
+      this.generation++;clearTimeout(this.connectTimer);clearTimeout(this.maxTimer);clearTimeout(this.closeTimer);clearTimeout(this.utteranceTimer);
       if(this.recorder){this.recorder.onstop=null;this.recorder.ondataavailable=null;if(this.recorder.state==='recording')this.recorder.stop();}
       this.stream?.getTracks().forEach(t=>t.stop());
       this.filter?.close();this.filter=null;

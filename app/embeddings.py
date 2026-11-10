@@ -20,6 +20,8 @@ class Encoder:
         options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
         self.session=ort.InferenceSession(str(folder/'model_quint8_avx2.onnx'),sess_options=options,providers=['CPUExecutionProvider'])
         self.inputs={i.name for i in self.session.get_inputs()};self.lock=threading.Lock()
+        # Names this model for caches that store its vectors (app/screens.py).
+        self.fingerprint='paraphrase-multilingual-MiniLM-L12-v2/model_quint8_avx2'
         # Handbook retrieval and screen search embed the same message in one turn; keep recent queries.
         self.recent=OrderedDict()
 

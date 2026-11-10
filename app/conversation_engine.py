@@ -103,7 +103,7 @@ kind:
 - decline: refuses to be contacted by Leadrat sales.
 A correction of their previous request (Beacon showed or explained the wrong thing, and they say what they meant) is product. When a business question is pending, a short word or phrase in reply (a problem area, a tool name, a number, "me", "now") is their answer to it: customer, not product, unless they clearly ask a question about the product or ask to see something.
 For the business-type question, an ordinary answer meaning "I am a developer" in any language answers developer in the real-estate context. An explicitly software/API developer is not a property developer: ask a friendly clarification about their real-estate business without inventing a business-type update.
-show: for product, the id of the screen option to demonstrate, or "none". Pick the option that shows exactly what they ask about: where it is configured when they ask how to set something up, where it is viewed when they ask to see it, the screen they meant when they correct Beacon, the offered screen when they accept the offer. When they ask about or to see a module, feature, report or list by name, even misspelled, show the option with that name; a module's landing page lists its pages. Explaining a named module includes showing its main screen by default, even if the visitor did not say "show". Resolve speech transcription mistakes by meaning and context. Choose "none" only for general questions about the whole product or what Beacon can do, when no option shows what they ask about, and for every kind other than product. Showing an unrelated screen is worse than showing nothing.
+show: for product, the id of the screen option to demonstrate, or "none". Pick the option that shows exactly what they ask about: where it is configured when they ask how to set something up, where it is viewed when they ask to see it, the screen they meant when they correct Beacon, the offered screen when they accept the offer. When they ask about or to see a module, feature, report or list by name, even misspelled, show the option with that name; a module's landing page lists its pages. Explaining a named module includes showing its main screen by default, even if the visitor did not say "show". When a guided walkthrough and a page or section both cover the request, choose the guided walkthrough: it demonstrates the steps. Resolve speech transcription mistakes by meaning and context. Choose "none" only for general questions about the whole product or what Beacon can do, when no option shows what they ask about, and for every kind other than product. Showing an unrelated screen is worse than showing nothing.
 no_demo_quote: empty unless they explicitly ask not to open or show a screen; then copy their exact words.
 problem: true only when they report something not working, missing or wrong in their own CRM.
 change_request: true only when the latest message tells Beacon itself to change, delete, send, export, upload, assign or save CRM data now. Asking how something is done, where it is done, or to see or learn it is false, in any language ("lead assign karna sikhao" is false; "delete this lead" is true).
@@ -246,11 +246,13 @@ class ConversationEngine:
         except Exception:passages=[]
         if self.screens is not None:
             try:
-                await self.screens.prepare(encoder)
-                ranked=await self.screens.candidates(encoder,message,pages=8,context='\n'.join(reversed(recent)))
+                # A visitor never waits for the screen index (minutes of CPU after a knowledge change): it is
+                # built in the background, and until then screens are found by their words alone.
+                if not self.screens.ready:self.screens.build(encoder)
+                ranked=await self.screens.candidates(encoder,message,pages=8,context='\n'.join(reversed(recent)),walkthroughs=3)
                 options=[e for _,e,_ in ranked]
             except Exception:
-                ranked=await self.screens.candidates(None,message,pages=8,context='\n'.join(reversed(recent)))
+                ranked=await self.screens.candidates(None,message,pages=8,context='\n'.join(reversed(recent)),walkthroughs=3)
                 options=[e for _,e,_ in ranked]
             # What Beacon offered or last showed stays available for "yes" and "isme ..." follow-ups.
             extra=[self.screens.by_id.get('w:'+state['last_offer']) if state.get('last_offer') else None,

@@ -7,6 +7,7 @@ app/conversation_engine.py. No page, module or section is named in this file.
 """
 import asyncio
 import hashlib
+import os
 import json
 import re
 import numpy as np
@@ -27,6 +28,20 @@ def grams(text):
     """Character trigrams of the words in text, for matching names whatever the spelling."""
     text=' '+' '.join(re.findall(r'[a-z0-9]+',text.lower()))+' '
     return {text[i:i+3] for i in range(len(text)-2)}
+
+STORE=ROOT/'.state'/'screen-vectors.npz'
+
+def load_store():
+    """Embedding per screen text (hash -> vector) from the last index; empty when absent or unreadable."""
+    try:
+        with np.load(STORE) as data:return dict(zip(data['keys'].tolist(),data['vectors']))
+    except (OSError,KeyError,ValueError):return {}
+
+def save_store(keys,vectors):
+    STORE.parent.mkdir(exist_ok=True)
+    temporary=STORE.with_name('screen-vectors.tmp.npz')
+    np.savez(temporary,keys=np.array(keys),vectors=np.asarray(vectors,dtype=np.float32))
+    os.replace(temporary,STORE)
 
 def postings(pairs,array=False):
     """An inverted index: key -> the values listed with it, in first-seen order."""
@@ -80,15 +95,40 @@ class Screens:
     @property
     def ready(self):return self.vectors is not None
 
+    def build(self,encoder):
+        """Start preparing the index in the background (at most one build at a time)."""
+        if self.ready or encoder is None or (getattr(self,'_build',None) and not self._build.done()):return
+        self._build=asyncio.create_task(self.prepare(encoder))
+        self._build.add_done_callback(lambda t:None if t.cancelled() else t.exception())
+
     async def prepare(self,encoder):
         async with self.lock:
             if self.ready or not self.entries or encoder is None:return
             cache=ROOT/'.state'/f'screens-{self.version}.npy'
+            texts=[e['text'][:400] for e in self.entries]
+            # Stored vectors are reused per (model, screen text); an encoder that does not name its model
+            # (tests, a replaced model) never mixes with them.
+            model=getattr(encoder,'fingerprint',None)
+            keys=[hashlib.sha256((model+'|'+t).encode()).hexdigest()[:24] for t in texts] if model else None
             if cache.is_file():
                 vectors=np.load(cache)
-                if len(vectors)==len(self.entries):self.vectors=vectors;return
-            vectors=await asyncio.to_thread(encoder.encode,[e['text'][:400] for e in self.entries],normalize_embeddings=True,show_progress_bar=False)
+                if len(vectors)==len(self.entries):
+                    self.vectors=vectors
+                    if keys:
+                        stored=await asyncio.to_thread(load_store)
+                        if not all(k in stored for k in keys):await asyncio.to_thread(save_store,keys,vectors)
+                    return
+            # Vectors are kept per screen text, so editing a few walkthroughs re-encodes those few rather
+            # than all ~2,000 screens (minutes of CPU at start-up).
+            known=await asyncio.to_thread(load_store) if keys else {}
+            keys=keys or [str(i) for i in range(len(texts))]
+            missing=[i for i,k in enumerate(keys) if k not in known]
+            if missing:
+                fresh=await asyncio.to_thread(encoder.encode,[texts[i] for i in missing],normalize_embeddings=True,show_progress_bar=False)
+                for i,vector in zip(missing,fresh):known[keys[i]]=vector
+            vectors=np.array([known[k] for k in keys],dtype=np.float32)
             cache.parent.mkdir(exist_ok=True);np.save(cache,vectors);self.vectors=vectors
+            if model:await asyncio.to_thread(save_store,keys,vectors)
 
     async def signals(self,encoder,query):
         """Per location: meaning (embedding similarity), the message's words in its name, and on it."""
@@ -110,10 +150,12 @@ class Screens:
         _,name,shown,_=await self.signals(encoder,query)
         return (WEIGHTS[1]*name+WEIGHTS[2]*shown)/max(1e-9,WEIGHTS[1]+WEIGHTS[2])
 
-    async def candidates(self,encoder,query,pages=8,context=''):
+    async def candidates(self,encoder,query,pages=8,context='',walkthroughs=0):
         """Up to `pages` distinct pages, best first, as (score, option). A section is offered instead of its
         page only when the question names that part of the page. The latest message leads; earlier turns
-        decide only when it is a bare follow-up with no subject of its own."""
+        decide only when it is a bare follow-up with no subject of its own. `walkthroughs` adds that many of
+        the best prepared walkthroughs not already chosen: about 40 curated demos would otherwise be crowded
+        out by 2,000 generated pages sharing common words such as "leads" and "delete"."""
         async def score(text):
             if self.ready and encoder is not None:
                 try:return await self.relevance(encoder,text),await self.lexical(encoder,text)
@@ -121,7 +163,7 @@ class Screens:
             # Startup or embedding failure must not hide the CRM page catalogue.
             similar=self.similar(text);asked=grams(text)
             name=self.word_match(similar,self.namewords);shown=self.word_match(similar,self.words)
-            spelling=np.array([len(asked&n)/len(n) if n else 0.0 for n in self.names])
+            spelling=self.spelling(asked)
             return WEIGHTS[1]*name+WEIGHTS[2]*shown+WEIGHTS[3]*spelling,(WEIGHTS[1]*name+WEIGHTS[2]*shown)/max(1e-9,WEIGHTS[1]+WEIGHTS[2])
         scores,words=await score(query)
         if context:
@@ -129,8 +171,8 @@ class Screens:
             contextual,_=await score(query+'\n'+context)
             scores=(1-weight)*scores+weight*contextual
         asked=grams(query)
-        chosen=[];seen=set()
-        for i in np.argsort(-scores):
+        chosen=[];seen=set();order=np.argsort(-scores)
+        for i in order:
             e=self.entries[i];key=e.get('walkthrough') or e['path']
             # Only pages that open directly can be demonstrated; the page that leads to the others stays.
             if not e.get('reachable',True) or key in seen:continue
@@ -140,6 +182,9 @@ class Screens:
             if e['section'] and not named:
                 e=next((x for x in self.entries if x['path']==e['path'] and not x['section']),e)
             chosen.append((float(scores[i]),e,float(words[i])))
+        if walkthroughs:
+            extra=[i for i in order if self.entries[i].get('walkthrough') and self.entries[i]['walkthrough'] not in seen][:walkthroughs]
+            chosen+=[(float(scores[i]),self.entries[i],float(words[i])) for i in extra]
         return chosen
 
     def matches(self,word):

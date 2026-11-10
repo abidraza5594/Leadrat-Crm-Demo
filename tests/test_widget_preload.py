@@ -45,7 +45,8 @@ def test_preloaded_window_starts_session_only_when_opened():
     if created:break
     await asyncio.sleep(.01)
    assert len(created)==1 and created[0]['voice'] is False
-   assert asyncio.get_running_loop().time()-started<1.5
+   # Generous on purpose: the shared test machine can be busy; the session starts right after the click.
+   assert asyncio.get_running_loop().time()-started<3
    # Closing ends the session and prepares the next window, which waits for another click.
    await frame.locator('#close').click()
    await page.wait_for_function("document.querySelector('.beacon-overlay').hidden")

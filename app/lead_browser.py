@@ -25,6 +25,52 @@ async def one(locator, description, click=False):
     else:await target.evaluate("el => { el.style.outline='3px solid #18aa83'; el.style.outlineOffset='4px'; }")
     return target
 
+async def highlight(element):
+    # Inside the control, with a tint: the bulk bar and menu are dark, clip anything drawn outside them, and
+    # set their colours with !important, so the highlight must be important too.
+    await element.scroll_into_view_if_needed()
+    await element.evaluate("""el => { for (const [k,v] of [['outline','2px solid #3ee6b0'],['outline-offset','-2px'],
+        ['background','rgba(24,170,131,.55)'],['border-radius','6px']]) el.style.setProperty(k,v,'important'); }""")
+
+async def labelled(locator):
+    items=await visible(locator)
+    return items,[' '.join((await item.inner_text()).split()) for item in items]
+
+async def bulk_actions(page,choose=None):
+    """Select the leads on this page and point at the bulk action the visitor means. The actions are read
+    from the CRM page (they differ by account), and which one is meant is decided by the conversation model
+    from the conversation (choose). Ticking checkboxes and opening More Actions change nothing in the CRM;
+    no bulk action is ever clicked, and leave_screen clears the selection."""
+    if not await page.evaluate("()=>!!document.querySelector('.ag-header-select-all input')?.checked"):
+        await one(page.locator('.ag-header-select-all'),'The select-all checkbox',click=True)
+    try:await page.get_by_text(re.compile(r'^\s*Leads? Selected\s*$',re.I)).first.wait_for(state='visible',timeout=6000)
+    except Exception:raise DemoError('Selecting leads did not show the bulk actions bar in this account.')
+    ticked="I've ticked the checkbox at the top of the first column, which selects the leads on this page."
+    bar,bar_labels=await labelled(page.locator('.btn-bulk-black:not(#moreActionsDropdown)'))
+    menu,menu_labels=[],[]
+    more=page.locator('#moreActionsDropdown')
+    if await more.count():
+        # The CRM's floating help launcher can cover this button; use its keyboard action, as for Save.
+        await more.focus();await more.press('Enter')
+        try:
+            await page.locator('bs-dropdown-container .btn-bulk-black').first.wait_for(state='visible',timeout=4000)
+            menu,menu_labels=await labelled(page.locator('bs-dropdown-container .btn-bulk-black'))
+        except Exception:pass
+    choice=None
+    if choose:
+        try:choice=await choose(bar_labels+menu_labels)
+        except Exception:choice=None
+    if choice in bar_labels:
+        if menu:await page.keyboard.press('Escape')
+        await highlight(bar[bar_labels.index(choice)])
+        return ticked+f" The bar at the bottom shows the bulk actions, and I've highlighted {choice}. I haven't run it."
+    if choice in menu_labels:
+        await highlight(menu[menu_labels.index(choice)])
+        return ticked+f" Then I opened More Actions on the bar at the bottom, where {choice} is highlighted. I haven't clicked it."
+    if menu:
+        return ticked+" The bar at the bottom shows the bulk actions, and I've opened More Actions to show the rest. I haven't run any of them."
+    return ticked+" The bar at the bottom shows the bulk actions available to this account. I haven't run any of them."
+
 async def walkthrough(worker, feature):
     key=feature['id'];page=worker.page
     worker.walkthrough_feature=feature
@@ -40,9 +86,10 @@ async def walkthrough(worker, feature):
     list_controls={
         'search':'#search-dropdown input', 'columns':'.show-hide-gray ng-select',
         'date_filter':'multi-date-filter', 'saved_filters':'#saved-filter',
-        'bulk_update':'.ag-header-select-all', 'duplicates':'lead-name-section [title^="Total Duplicates"]',
+        'duplicates':'lead-name-section [title^="Total Duplicates"]',
     }
     async with worker.lock:
+        if key=='bulk_update':return await bulk_actions(page,getattr(worker,'choose_control',None))
         if key in list_controls:
             targets=await visible(page.locator(list_controls[key]))
             if not targets:raise DemoError(feature['title']+' has no visible control in this list. '+feature['facts'][0])
@@ -68,6 +115,11 @@ async def walkthrough(worker, feature):
             await choices[0].click()
             if hasattr(worker,'remember_checkpoint'):await worker.remember_checkpoint()
         await one(preview,'Lead preview')
+        if key=='archive':
+            # Pointed at, never clicked: deleting is a destructive action.
+            await one(preview.locator('leads-actions [title="Delete"]'),'The Delete action')
+            return ("Here's the Delete action for this lead, highlighted at the top of its preview. I haven't clicked it. "
+                    "To delete several leads at once, tick them in the list and use Bulk Delete under More Actions.")
         tab={'status':'Status','meeting':'Status','site_visit':'Status','booking':'Status',
              'appointment_done':'Status','notes':'Notes','history':'History','documents':'Document'}.get(key,'Overview')
         await one(preview.locator('.nav-item').filter(has_text=re.compile(r'^\s*'+tab+r'\s*$')),'Lead '+tab+' tab',True)

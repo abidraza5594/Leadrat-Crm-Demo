@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const ui = Object.fromEntries(['start','mic','mic-lang','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity','viewer-caption'].map(id=>[id,$(id)]));
+  const ui = Object.fromEntries(['start','mic','mic-lang','status','status-dot','screen','screen-empty','screen-status','empty-description','notice','error','messages','message','send','suggestions','voice','voice-status','replay','stop','end','steps','activity'].map(id=>[id,$(id)]));
   const parentOrigin = new URLSearchParams(location.search).get('parent_origin') || location.origin;
   // A preloaded window waits, already rendered, until the website opens it; then the session starts at once.
   const preloaded = new URLSearchParams(location.search).get('preload')==='1' && window.parent!==window;
@@ -157,14 +157,23 @@
     if (added && (nearBottom || firstRender)) box.scrollTo({top: box.scrollHeight, behavior: firstRender ? 'instant' : 'smooth'});
     if (messages.length) firstRender = false;
   }
+  let activityTimer = null;
   function renderSteps(steps) {
     const key = JSON.stringify(steps); if (key === stepsKey) return; stepsKey = key;
+    clearTimeout(activityTimer); ui.activity.classList.remove('fading');
     ui.activity.hidden = !steps.length; ui.steps.replaceChildren();
+    // The card sits over the live screen: once nothing is running it fades away and leaves the CRM clear.
+    if (steps.length && !steps.some(step=>step.status==='running'))
+      activityTimer = setTimeout(()=>{ ui.activity.classList.add('fading'); activityTimer = setTimeout(()=>{ ui.activity.hidden = true; }, 400); }, 6000);
     const labels={running:'In progress',verified:'Done',overview_only:'Overview',stopped:'Stopped',failed:'Could not complete',blocked:'Not allowed'};
     steps.forEach(step=>{const li=document.createElement('li');li.className='step-'+(step.status||'');li.textContent=step.title||'Workspace action';const detail=document.createElement('span');detail.textContent=[labels[step.status]||step.status,step.detail].filter(Boolean).join(' · ');li.append(detail);ui.steps.append(li);});
   }
   function render(next) {
     state = next;
+    setText($('voice-provider'), next.tts_provider==='soniox' ? 'Speech is transcribed and replies are voiced by Soniox.' : 'Speech is transcribed by Soniox; replies are voiced by Microsoft.');
+    // Registered, with nothing to correct: the details form has done its job, whatever state this page
+    // was left in (a reply lost while reconnecting, an earlier error, autofilled fields).
+    if (registrationOpened && registered() && !next.registration_error && !registrationSubmitting) registrationOpened = false;
     const label = {reconnecting:'Reconnecting your demo',ready:'Ready to explore',active:'Ready to explore',login_required:'Waiting for CRM sign-in',starting:'Preparing workspace',initializing:'Preparing workspace',stopped:'Walkthrough stopped',error:'Session needs attention',ended:'Session ended',closed:'Session ended'}[next.status] || 'Preparing workspace';
     setText(ui.status, next.busy ? 'Exploring your workspace…' : label);
     const dot = next.busy ? 'busy' : ['ready','active'].includes(next.status) ? 'ready' : '';
@@ -238,8 +247,11 @@
   }
   async function refreshFrame(target) {
     try {
-      // A still screen comes back as 304: no download, no decode.
-      const frame = await request(endpoint('/screen',target),frameTag && hasFrame?{headers:{'If-None-Match':frameTag}}:{},target,8000);
+      // A still screen comes back as 304: no download, no decode. The area's size lets the CRM take its
+      // shape, so the frame fills the left side with no bars.
+      const area = ui.screen.parentElement.getBoundingClientRect();
+      const fit = area.width && area.height ? `?w=${Math.round(area.width)}&h=${Math.round(area.height)}` : '';
+      const frame = await request(endpoint('/screen'+fit,target),frameTag && hasFrame?{headers:{'If-None-Match':frameTag}}:{},target,8000);
       if (frame.status === 304) { setText(ui['screen-status'],'Live view'); return; }
       if (frame.status === 204) { if (!hasFrame) setText(ui['screen-status'],'Waiting for the live screen'); return; }
       const tag = frame.headers.get('ETag');
@@ -290,7 +302,7 @@
         .then(r=>r.blob()).then(b=>b.type.startsWith('audio/') ? b : null).catch(()=>null);
       return item.audio;
     }
-    const canStream = () => state?.tts_provider==='edge' && window.MediaSource?.isTypeSupported('audio/mpeg');
+    const canStream = () => ['edge','soniox'].includes(state?.tts_provider) && window.MediaSource?.isTypeSupported('audio/mpeg');
     // The server already prepares upcoming parts; avoid duplicate buffered downloads when streaming.
     function lookahead() { if(!canStream())queue.slice(0,2).forEach(fetchClip); }
     function offer(message) {
@@ -469,7 +481,9 @@
       if(!active())return;
       if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){status('This browser cannot record audio. Please type.');return;}
       typed=null;voiceQueue.cancel();input.start(lang);
-    },shutdown(){typed=null;input.abort();},sent(){typed=null;input.discard();},switchLanguage(){lang=lang==='en'?'hi':'en';if(on)input.abort();paint();},refresh:paint};
+    },shutdown(){typed=null;input.abort();},
+    // The visitor sent or typed over the draft: speech still waiting for its pause must not overwrite it.
+    sent(){typed=null;input.discard();},switchLanguage(){lang=lang==='en'?'hi':'en';if(on)input.abort();paint();},refresh:paint};
   })();
 
   async function start() {
@@ -547,7 +561,7 @@
   }
   async function stop(){if(!session || stopPending)return;voiceQueue.cancel();stopPending=true;controls();try{await request(endpoint('/stop'),{method:'POST'});error('');notice('The current walkthrough was stopped.');}catch(e){error(e.message);}finally{stopPending=false;controls();}}
   ui.start.addEventListener('click',()=>{userEnded=false;reconnectAttempts=0;start();});ui.end.addEventListener('click',()=>endSession());ui.stop.addEventListener('click',stop);
-  $('composer').addEventListener('submit',e=>{e.preventDefault();send(ui.message.value);});ui.message.addEventListener('input',controls);ui.message.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send(ui.message.value);}});
+  $('composer').addEventListener('submit',e=>{e.preventDefault();send(ui.message.value);});ui.message.addEventListener('input',()=>{talk.sent();controls();});ui.message.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send(ui.message.value);}});
   ui.suggestions.addEventListener('click',e=>{const b=e.target.closest('[data-prompt]');if(b)send(b.dataset.prompt);});
   ui.mic.addEventListener('click',()=>talk.toggle());ui['mic-lang'].addEventListener('click',()=>talk.switchLanguage());
   ui.voice.addEventListener('click',()=>{const value=!voiceQueue.enabled;voiceQueue.setEnabled(value);if(value)voiceQueue.unlock();if(session)request(endpoint('/voice'),{method:'POST',body:JSON.stringify({enabled:value})}).catch(e=>error(e.message));});

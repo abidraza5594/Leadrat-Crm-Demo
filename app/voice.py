@@ -26,20 +26,36 @@ async def edge_audio(text,on_chunk=None):
             if on_chunk:on_chunk(chunk['data'])
     return b''.join(chunks)
 
+async def soniox_audio(text,on_chunk=None,reference=None):
+    from .soniox import realtime_speech
+    chunks=[]
+    async for data in realtime_speech.stream(text,reference):
+        chunks.append(data)
+        if on_chunk:on_chunk(data)
+    return b''.join(chunks)
+
+def voice_signature():
+    """Names the voice that produced cached audio, so changing provider or voice never replays old clips."""
+    if config.TTS_PROVIDER=='soniox':
+        from . import soniox
+        return 'soniox|'+soniox.TTS_MODEL+'|'+soniox.TTS_VOICE+'|'+str(soniox.TTS_SPEED)
+    return EDGE_VOICE+EDGE_RATE
+
 async def warm_phrases(texts):
     """Load fixed phrases from disk, synthesising only the missing ones. Failures are left for later."""
-    if config.TTS_PROVIDER!='edge':return
+    if config.TTS_PROVIDER not in {'edge','soniox'}:return
     limit=asyncio.Semaphore(3)
+    synthesise=soniox_audio if config.TTS_PROVIDER=='soniox' else edge_audio
     async def one(text):
         key=text_key(text)
         if key in PHRASES:return
-        path=PHRASE_DIR/(hashlib.sha256((EDGE_VOICE+EDGE_RATE+text).encode()).hexdigest()+'.mp3')
+        path=PHRASE_DIR/(hashlib.sha256((voice_signature()+text).encode()).hexdigest()+'.mp3')
         try:
             PHRASES[key]=await asyncio.to_thread(path.read_bytes);return
         except OSError:pass
         async with limit:
             try:
-                async with asyncio.timeout(22):audio=await edge_audio(text)
+                async with asyncio.timeout(22):audio=await synthesise(text)
             except Exception:return
         if not audio:return
         PHRASES[key]=audio
@@ -115,15 +131,19 @@ class VoiceCache:
     async def _synthesize(self,text):
         async with self.limit:
             async with asyncio.timeout(22):
+                entry=self.streams.get(hashlib.sha256(text.encode()).hexdigest())
+                def forward(data):
+                    if entry is not None:
+                        entry['chunks'].append(data)
+                        entry['changed'].set()
                 if config.TTS_PROVIDER=='soniox':
-                    from .soniox import synthesize
-                    audio=await synthesize(text,self.reference)
+                    received=[]
+                    try:audio=await soniox_audio(text,lambda data:(received.append(1),forward(data)),self.reference)
+                    except Exception:
+                        # Nothing was played yet: say it with the backup voice rather than stay silent.
+                        if received:raise
+                        audio=await edge_audio(text,forward)
                 elif config.TTS_PROVIDER=='edge':
-                    entry=self.streams.get(hashlib.sha256(text.encode()).hexdigest())
-                    def forward(data):
-                        if entry is not None:
-                            entry['chunks'].append(data)
-                            entry['changed'].set()
                     audio=await edge_audio(text,forward)
                 elif config.TTS_URL:
                     async with httpx.AsyncClient(timeout=10) as client:

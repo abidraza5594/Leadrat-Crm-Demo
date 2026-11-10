@@ -35,3 +35,4 @@ def test_failed_nested_action_explains_without_claiming_demo(monkeypatch):
         assert 'email' not in s.shown
         assert any('No email control' in m['text'] for m in s.messages)
     asyncio.run(run())
+

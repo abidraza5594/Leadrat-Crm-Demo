@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Beacon Demo Slides</title>
+<style>
+  :root { --bg:#0b1020; --panel:#131a30; --line:#26304f; --text:#eef1f8; --muted:#9aa5c4; --accent:#4f8cff; --accent2:#22c3a6; --warn:#f5b84a; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:"Segoe UI", Inter, Arial, sans-serif; }
+  .slide { width:1920px; height:1080px; padding:96px 120px; display:flex; flex-direction:column; position:relative; overflow:hidden;
+           background:radial-gradient(1200px 700px at 85% -10%, #1b2a5a 0%, transparent 60%), var(--bg); }
+  .kicker { color:var(--accent2); font-size:30px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; margin-bottom:22px; }
+  h1 { font-size:110px; line-height:1.02; font-weight:800; }
+  h2 { font-size:72px; font-weight:750; margin-bottom:48px; }
+  .sub { font-size:40px; color:var(--muted); margin-top:30px; max-width:1400px; line-height:1.35; }
+  .brand { position:absolute; bottom:56px; left:120px; color:var(--muted); font-size:24px; }
+  .brand b { color:var(--text); }
+  .grid { display:grid; gap:28px; }
+  .g2 { grid-template-columns:1fr 1fr; } .g3 { grid-template-columns:repeat(3,1fr); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:22px; padding:32px 36px; }
+  .card .t { color:var(--muted); font-size:24px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:10px; }
+  .card .v { font-size:36px; font-weight:650; line-height:1.25; }
+  .card .s { font-size:24px; color:var(--muted); margin-top:8px; line-height:1.35; }
+  .big { font-size:88px !important; color:var(--accent); font-weight:800 !important; }
+  .chapter { justify-content:center; }
+  .chapter .num { font-size:220px; font-weight:900; color:var(--accent); opacity:.18; position:absolute; right:120px; top:60px; }
+  .chapter ul { margin-top:50px; font-size:40px; color:var(--muted); line-height:1.7; list-style:none; }
+  .chapter li::before { content:"→  "; color:var(--accent2); }
+  .flow { display:flex; align-items:stretch; gap:18px; margin-top:10px; }
+  .step { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:28px; }
+  .step .n { color:var(--accent2); font-size:26px; font-weight:700; }
+  .step .h { font-size:32px; font-weight:700; margin:10px 0; }
+  .step .d { font-size:23px; color:var(--muted); line-height:1.4; }
+  .arrow { align-self:center; color:var(--accent); font-size:46px; }
+  table { border-collapse:collapse; width:100%; font-size:30px; }
+  td, th { padding:16px 22px; border-bottom:1px solid var(--line); text-align:left; }
+  th { color:var(--muted); font-weight:600; font-size:24px; text-transform:uppercase; letter-spacing:.06em; }
+  td.r, th.r { text-align:right; } .hl { color:var(--accent2); font-weight:700; }
+  .foot { margin-top:auto; font-size:22px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<section class="slide" id="intro" style="justify-content:center">
+  <div class="kicker">Leadrat · AI Product Guide</div>
+  <h1>Beacon</h1>
+  <div class="sub">Visitors see the real Leadrat CRM live and talk to Beacon by text or voice. Beacon answers, demonstrates the screen, asks follow-up questions and saves the lead to the CRM.</div>
+  <div class="grid g3" style="margin-top:70px; max-width:1500px">
+    <div class="card"><div class="t">Part 1</div><div class="v">Live demo</div></div>
+    <div class="card"><div class="t">Part 2</div><div class="v">How it is built</div></div>
+    <div class="card"><div class="t">Part 3</div><div class="v">Vendors &amp; cost</div></div>
+  </div>
+</section>
+
+<section class="slide chapter" id="ch-register">
+  <div class="num">01</div>
+  <div class="kicker">Live demo</div>
+  <h2>Visitor registration</h2>
+  <ul><li>Name, phone (with country code) and email</li><li>Saved in the background as a lead in the Surya tenant</li><li>The demo continues without waiting</li></ul>
+</section>
+
+<section class="slide chapter" id="ch-question">
+  <div class="num">02</div>
+  <div class="kicker">Live demo</div>
+  <h2>Ask a question, see it live</h2>
+  <ul><li>Opens the matching CRM screen and highlights the control</li><li>Answers only from the product handbook</li><li>Every answer is source-checked, then spoken</li></ul>
+</section>
+
+<section class="slide chapter" id="ch-followup">
+  <div class="num">03</div>
+  <div class="kicker">Live demo</div>
+  <h2>Follow-up questions</h2>
+  <ul><li>Brokerage, developer or channel partner?</li><li>Sales team size · new leads per month · biggest problem</li><li>Lead is scored; handed to sales only with consent</li></ul>
+</section>
+
+<section class="slide chapter" id="ch-surya">
+  <div class="num">04</div>
+  <div class="kicker">Live demo</div>
+  <h2>Proof: lead in the Surya tenant</h2>
+  <ul><li>Surya QA CRM → Manage Leads</li><li>Same name, phone and email entered in the demo</li><li>Source: Website</li></ul>
+</section>
+
+<section class="slide" id="architecture">
+  <div class="kicker">How it works</div>
+  <h2>One question, step by step</h2>
+  <div class="flow">
+    <div class="step"><div class="n">1 · ~5 ms</div><div class="h">Local search</div><div class="d">Handbook (139 passages) + CRM screen map (2,092 screens)</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="n">2 · DeepSeek</div><div class="h">Plan</div><div class="d">What the visitor means, which screen to show</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="n">3 · parallel</div><div class="h">Screen + answer</div><div class="d">Chrome opens &amp; highlights while the answer is written</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="n">4 · DeepSeek</div><div class="h">Source check</div><div class="d">Every claim verified; Soniox voice generated meanwhile</div></div>
+  </div>
+  <div class="grid g3" style="margin-top:56px">
+    <div class="card"><div class="t">Click → live CRM</div><div class="v big">55–245 ms</div></div>
+    <div class="card"><div class="t">Question → answer</div><div class="v big">3.3–4.7 s</div></div>
+    <div class="card"><div class="t">Answer → voice starts</div><div class="v big">45–77 ms</div></div>
+  </div>
+  <div class="foot">Safety in code: the demo browser only navigates and highlights. The only write is Add Lead, after explicit confirmation.</div>
+</section>
+
+<section class="slide" id="stack">
+  <div class="kicker">Technology</div>
+  <h2>Tech stack</h2>
+  <div class="grid g3">
+    <div class="card"><div class="t">Backend</div><div class="v">Python 3.11 · FastAPI · Uvicorn</div></div>
+    <div class="card"><div class="t">Conversation engine</div><div class="v">LangGraph</div><div class="s">context → plan → grounded answer → check</div></div>
+    <div class="card"><div class="t">Language model</div><div class="v">DeepSeek <span class="hl">deepseek-flash</span></div><div class="s">V4.1-Flash, JSON mode</div></div>
+    <div class="card"><div class="t">Live CRM</div><div class="v">Playwright + headless Chrome</div></div>
+    <div class="card"><div class="t">Speech-to-text</div><div class="v">Soniox <span class="hl">stt-rt-v5</span></div><div class="s">English, Hindi, Hinglish · RNNoise cleanup</div></div>
+    <div class="card"><div class="t">Text-to-speech</div><div class="v">Soniox <span class="hl">tts-rt-v2</span> · Priya</div><div class="s">Backup: Microsoft Edge voice</div></div>
+    <div class="card"><div class="t">Widget</div><div class="v">HTML · CSS · JavaScript</div></div>
+    <div class="card"><div class="t">CRM registration</div><div class="v">Leadrat API · tenant <span class="hl">surya</span></div></div>
+    <div class="card"><div class="t">Handbook</div><div class="v">pypdf · Pre-Sales Handbook v0.2</div></div>
+  </div>
+</section>
+
+<section class="slide" id="vector">
+  <div class="kicker">Knowledge search</div>
+  <h2>Vector database &amp; embeddings</h2>
+  <div class="grid g2">
+    <div class="card"><div class="t">Vector dimension</div><div class="v big">384</div><div class="s">float32, L2-normalised · cosine similarity</div></div>
+    <div class="card"><div class="t">Vector database</div><div class="v">PostgreSQL + <span class="hl">pgvector</span></div><div class="s">Deployment: vector(384), cosine operator &lt;=&gt;<br>Local today: SQLite + in-memory NumPy</div></div>
+    <div class="card"><div class="t">Embedding model</div><div class="v">paraphrase-multilingual-MiniLM-L12-v2</div><div class="s">INT8 ONNX on CPU · 50+ languages incl. Hinglish</div></div>
+    <div class="card"><div class="t">What is indexed</div><div class="v">139 handbook passages · 2,092 CRM screens</div><div class="s">Hybrid search: vectors + BM25 keywords (RRF, k = 60)</div></div>
+  </div>
+</section>
+
+<section class="slide" id="cost">
+  <div class="kicker">Vendors &amp; cost</div>
+  <h2>What it costs</h2>
+  <div class="grid g3" style="margin-bottom:40px">
+    <div class="card"><div class="t">AI · DeepSeek</div><div class="v">$0.0016</div><div class="s">per product question</div></div>
+    <div class="card"><div class="t">Voice · Soniox</div><div class="v">$0.70 / hour of speech</div><div class="s">STT $0.12 / hour</div></div>
+    <div class="card"><div class="t">Hosting · AWS Mumbai</div><div class="v">from $77 / month</div><div class="s">EC2 + disk, backups, IP</div></div>
+  </div>
+  <table>
+    <tr><th>1,000 users / month</th><th class="r">Edge voice (free)</th><th class="r">Soniox voice</th></tr>
+    <tr><td>0 questions per user</td><td class="r">₹6,890</td><td class="r">₹6,986</td></tr>
+    <tr><td>20 questions per user</td><td class="r hl">₹16,528</td><td class="r hl">₹26,082</td></tr>
+    <tr><td>30 questions per user</td><td class="r">₹20,299</td><td class="r">₹34,414</td></tr>
+    <tr><td>50 questions per user</td><td class="r">₹33,189</td><td class="r">₹56,427</td></tr>
+  </table>
+  <div class="foot">List prices on 16 Oct 2026, $1 = ₹90, excluding GST. Visitors typing; peak DeepSeek prices. Source: docs/TECH_STACK_AND_COSTS.md</div>
+</section>
+
+<section class="slide" id="closing" style="justify-content:center">
+  <div class="kicker">Summary</div>
+  <h1 style="font-size:92px">Beacon shows, explains<br>and qualifies — live.</h1>
+  <div class="grid g2" style="margin-top:60px; max-width:1500px">
+    <div class="card"><div class="v">Live CRM walkthrough with voice</div></div>
+    <div class="card"><div class="v">Follow-up questions &amp; lead scoring</div></div>
+    <div class="card"><div class="v">Leads saved to the Surya tenant</div></div>
+    <div class="card"><div class="v">Navigate &amp; highlight only — no data changes</div></div>
+  </div>
+</section>
+
+</body>
+</html>

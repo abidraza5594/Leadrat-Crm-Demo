@@ -19,6 +19,7 @@
         <a class="brand" href="#" aria-label="Beacon by Leadrat"><span class="brand-mark" aria-hidden="true">b.</span><span
                 class="brand-name">Beacon</span><span class="brand-by">by Leadrat</span></a>
         <div class="session-state"><i id="status-dot" aria-hidden="true"></i><span id="status">Not connected</span></div>
+        <span class="live-badge"><i aria-hidden="true"></i><span id="screen-status">Waiting for a session</span></span>
         <div class="top-actions">
             <button id="voice" class="pill-toggle" type="button" aria-pressed="true" title="Turn voice off">
                 <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
@@ -31,33 +32,24 @@
     </header>
     <main>
         <section class="viewer" aria-label="Live CRM screen">
-            <div class="window">
-                <div class="window-bar">
-                    <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                    <span class="address"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Leadrat CRM · demo workspace</span>
-                    <span class="live-badge"><i aria-hidden="true"></i><span id="screen-status">Waiting for a session</span></span>
-                </div>
-                <div class="screen-area">
-                    <img id="screen" alt="Live view of the Leadrat CRM workspace" hidden>
-                    <div id="screen-empty">
-                        <div class="skeleton" aria-hidden="true"><span class="sk-side"></span><span class="sk-top"></span><span
-                                class="sk-rows"></span></div>
-                        <div class="empty-copy">
-                            <div class="empty-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
-                            <div class="eyebrow">A real product walkthrough</div>
-                            <h1>Let’s take a look.</h1>
-                            <p id="empty-description">Start a session to explore Leadrat with Beacon. Your live workspace will
-                                appear here.</p>
-                        </div>
+            <div class="screen-area">
+                <img id="screen" alt="Live view of the Leadrat CRM workspace" hidden>
+                <div id="screen-empty">
+                    <div class="skeleton" aria-hidden="true"><span class="sk-side"></span><span class="sk-top"></span><span
+                            class="sk-rows"></span></div>
+                    <div class="empty-copy">
+                        <div class="empty-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+                        <div class="eyebrow">A real product walkthrough</div>
+                        <h1>Let’s take a look.</h1>
+                        <p id="empty-description">Start a session to explore Leadrat with Beacon. Your live workspace will
+                            appear here.</p>
                     </div>
-                    <section id="activity" hidden aria-label="Walkthrough activity">
-                        <div class="activity-title">What Beacon is doing</div>
-                        <ol id="steps"></ol>
-                    </section>
                 </div>
+                <section id="activity" hidden aria-label="Walkthrough activity">
+                    <div class="activity-title">What Beacon is doing</div>
+                    <ol id="steps"></ol>
+                </section>
             </div>
-            <div class="viewer-footer"><span id="viewer-caption">You can stop the walkthrough at any time.</span><span
-                    class="live-label">Test workspace · nothing is saved without your confirmation</span></div>
         </section>
         <aside class="conversation" aria-label="Chat with Beacon">
             <div class="chat-heading">
@@ -117,7 +109,7 @@
                     <button id="stop" type="button" title="Stop the walkthrough" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg><span class="label">Stop</span></button>
                 </div>
                 <p id="voice-status" class="voice-status" role="status">Voice on · Beacon reads each reply aloud.</p>
-                <p class="voice-disclosure">Speech is transcribed by Soniox; replies are voiced by Microsoft. <span id="privacy">A live, guided product session.</span></p>
+                <p class="voice-disclosure"><span id="voice-provider">Speech is transcribed by Soniox; replies are voiced by Microsoft.</span> <span id="privacy">A live, guided product session.</span></p>
             </div>
         </aside>
     </main>

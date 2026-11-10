@@ -50,6 +50,8 @@ def aside(text,phase):
     return request or len(text.split())>5
 
 def keyword_reading(phase,text,low):
+    """Offline fallback only, used when the conversation model cannot be reached."""
+    if low in CANCEL and not (phase=='email' and low in SKIP):return ('cancel','')
     if phase=='review':return ('confirm','') if low in CONFIRM else ('other','') if aside(text,phase) else ('unclear','')
     if aside(text,phase):return ('other','')
     if phase=='email' and low in SKIP:return ('skip','')
@@ -88,10 +90,10 @@ async def handle(s,message,completion=None):
     if d['phase'] in {'submitted','done'}:
         s.say('This creation request has already been submitted. Check the Leads list before starting another, to avoid a duplicate.')
         return True
-    if low in CANCEL:intent,value='cancel',''
-    else:
-        asked=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant'),'')
-        intent,value=await interpret(completion,d['phase'],asked,text) or keyword_reading(d['phase'],text,low)
+    # The conversation model reads every reply in context ("nahi" to the email question means no email,
+    # not "cancel the lead"); fixed words are used only when the model cannot be reached.
+    asked=next((m['text'] for m in reversed(s.messages) if m['role']=='assistant'),'')
+    intent,value=await interpret(completion,d['phase'],asked,text) or keyword_reading(d['phase'],text,low)
     if intent=='cancel':
         s.lead_draft=None;s.pending_discovery=d.get('resume')
         s.say("Okay, I've cancelled the new lead. Nothing was saved.")
@@ -103,7 +105,7 @@ async def handle(s,message,completion=None):
         return False
     if d['phase']=='name':
         name=value
-        if intent!='value' or not 2<=len(name)<=75 or not re.fullmatch(r"[^\W\d_][\w .'-]*",name) or re.search(r'\b(show|open|how|delete|save|ignore)\b',name,re.I):
+        if intent!='value' or not 2<=len(name)<=75 or not re.fullmatch(r"[^\W\d_][\w .'-]*",name):
             s.say("I just need the customer's name here. Or say cancel to stop adding this lead.");return True
         d['name']=name;d['phase']='phone'
         s.say("Thanks. What's their phone number, with the country code? For example, +91 followed by the number.");return True
@@ -123,7 +125,7 @@ async def handle(s,message,completion=None):
         s.say(f"Here's the new lead: {d['name']}, phone {d['phone']}, email {d['email'] or 'not provided'}. {defaults} Please check the form, then say confirm to save it, or cancel.")
         return True
     # Saving is a write: only a short, clear approval counts, never an approval inside a question.
-    if not (low in CONFIRM or (intent=='confirm' and '?' not in text and len(text.split())<=8)):
+    if not (intent=='confirm' and '?' not in text and len(text.split())<=8):
         s.say('Please check the details on the form, then say confirm to save it, or cancel. To change something, cancel and start Add Lead again.');return True
     if not await s.worker.signed_in():raise DemoError('CRM sign-in expired. The lead was not submitted.')
     if await s.worker.form_signature()!=d['signature']:

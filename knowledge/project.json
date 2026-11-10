@@ -11,6 +11,8 @@
     "dashboard": ["Dashboard"]
   },
   "descriptions": {
+    "bulk_update": "Act on many leads at once from the lead list: delete, update status, reassign, WhatsApp, email and other bulk actions on the selected leads.",
+    "archive": "Delete or restore one lead from its own preview.",
     "leads": "How to manage leads in the CRM. General lead management, enquiries, sales pipeline and the leads list.",
     "bulk_upload": "Import active leads into the Leads module. This is separate from raw prospect datasets in the Data Management module.",
     "add_lead": "Show how to add one new enquiry; collect required details and request confirmation before creating a lead."

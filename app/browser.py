@@ -15,7 +15,19 @@ class DemoError(Exception):pass
 
 NAV='a.nav-item,.module-navbar a,[data-ai-nav-route]'
 LOGIN_FIELDS='#inpLoginPassword,input[type="password"]'
-CLOSE_TIMEOUT=3.0
+# Shutdown runs in the background (no visitor waits). A busy machine needs more than a few seconds, and
+# cutting Playwright off mid-stop leaves its connection task to log InvalidStateError.
+CLOSE_TIMEOUT=10.0
+# The CRM runs endless decorative CSS animations (a "What's new" shimmer, blinking SLA labels) that
+# repaint the hidden browser continuously: measured 81% of a CPU core on an idle Leads page, 18% with them
+# held still. They are held at their first frame (blinking labels stay visible); finite transitions such
+# as dropdowns are unaffected. Pages render the same information, without the motion.
+STILL_DECORATIONS="""(() => {
+  const still = () => { for (const a of document.getAnimations()) {
+    if (a.playState === 'running' && a.effect?.getComputedTiming().iterations === Infinity) { a.pause(); a.currentTime = 0; }
+  } };
+  setInterval(still, 1000);
+})();"""
 LOGIN_BLOCKED=re.compile(r'\baccount (?:has been|is) locked\b|\b(?:must|need to|required to) reset (?:your )?password\b|\bpassword reset (?:is )?required\b',re.I)
 
 # One round trip instead of one per matching element: the sidebar has dozens of links and this check
@@ -176,6 +188,7 @@ class BrowserWorker:
         await self.context.grant_permissions(['geolocation'],origin=config.CRM_ORIGIN)
         if config.LOCAL_DEVICE_LOCATION and known_location():await self.context.set_geolocation(known_location())
         await self.context.route('**/*',self.guard)
+        await self.context.add_init_script(STILL_DECORATIONS)
         self.page=await self.context.new_page()
         self.page.set_default_timeout(8000)
         self.page.on('dialog',self.dismiss_native)
@@ -303,6 +316,15 @@ class BrowserWorker:
         try:self.ready_frame=await self.capture()
         except Exception:self.ready_frame=None
 
+    async def fit(self,width,height):
+        """Give the CRM the shape of the visitor's screen area: the layout width stays, only the visible height changes."""
+        size=self.page.viewport_size if self.page and not self.page.is_closed() else None
+        if not size:return
+        target=max(600,min(1400,round(size['width']*height/width)))
+        # Never resize under a running action; the next frame request tries again.
+        if abs(size['height']-target)<3 or self.lock.locked():return
+        await self.page.set_viewport_size({'width':size['width'],'height':target})
+
     async def screenshot(self):
         frame,self.ready_frame=self.ready_frame,None
         if frame and config.SANDBOX_CONFIRMED and self.alive():return frame
@@ -345,6 +367,10 @@ class BrowserWorker:
                 # an open lead, skip choosing one and then miss its tabs.
                 try:await preview.first.wait_for(state='hidden',timeout=5000)
                 except Exception:pass
+        # A bulk-actions demo leaves leads ticked and More Actions open: close the menu and untick them.
+        if await page.locator('bs-dropdown-container').count():await page.keyboard.press('Escape')
+        if await page.evaluate("()=>!!document.querySelector('.ag-header-select-all input')?.checked"):
+            await page.locator('.ag-header-select-all').first.click()
         if own_changes:
             discard=page.locator('save-changes').get_by_role('button',name=re.compile(r'^Discard$',re.I))
             if await discard.count()==1 and await discard.is_visible():await discard.click()
